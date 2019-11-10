@@ -27,21 +27,79 @@ impl From<char> for PacketType {
     }
 }
 
+impl PacketType {
+    fn to_char(&self) -> char {
+        use PacketType::*;
+        match self {
+            Open => '0',
+            Close => '1',
+            Ping => '2',
+            Pong => '3',
+            Message => '4',
+            Upgrade => '5',
+            Noop => '6',
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Packet {
     packet_type: PacketType,
-    encoded_data: String,
+    encoded_data: PacketData,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PacketData {
+    Str(String),
+    Bytes(Vec<u8>),
 }
 
 impl Packet {
     pub fn new(packet_type: PacketType, encoded_data: &str) -> Self {
         Packet {
             packet_type,
-            encoded_data: encoded_data.to_owned(),
+            encoded_data: PacketData::Str(encoded_data.to_owned()),
         }
     }
-    pub fn data(&self) -> &str {
+
+    #[allow(dead_code)]
+    pub fn with_bytes(packet_type: PacketType, encoded_data: Vec<u8>) -> Self {
+        Packet {
+            packet_type,
+            encoded_data: PacketData::Bytes(encoded_data),
+        }
+    }
+
+    pub fn data(&self) -> &PacketData {
         &self.encoded_data
+    }
+
+    pub fn packet_type(&self) -> &PacketType {
+        &self.packet_type
+    }
+
+    pub fn encode(&self) -> String {
+        match &self.encoded_data {
+            PacketData::Str(string) => format!("{}{}", self.packet_type.to_char(), string),
+            _ => unimplemented!(),
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PacketDecodeError> {
+        // Convert byte to char, e.g. 4u8 -> '4'
+        let packet_type = bytes
+            .iter()
+            .next()
+            .unwrap()
+            .to_string()
+            .chars()
+            .next()
+            .unwrap();
+        println!("packet type {:?}", packet_type);
+        Ok(Packet {
+            packet_type: packet_type.into(),
+            encoded_data: PacketData::Bytes(bytes[1..].to_owned()),
+        })
     }
 }
 
@@ -54,7 +112,7 @@ impl FromStr for Packet {
         let packet_type = string.chars().next().unwrap().into();
         Ok(Packet {
             packet_type,
-            encoded_data: string[1..].to_owned(),
+            encoded_data: PacketData::Str(string[1..].to_owned()),
         })
     }
 }
