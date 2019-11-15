@@ -11,14 +11,37 @@ impl Payload {
         Self { packets: vec![p] }
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    // pub fn encode(&self) -> Vec<u8> {
+    //     let mut bytes = Vec::new();
+
+    //     for packet in self.packets.iter() {
+    //         let encoded_packet = packet.encode();
+    //         let mut packet_len = encoded_packet.len().to_string();
+    //         packet_len.push(':');
+    //         bytes.extend(packet_len.as_bytes().to_owned());
+    //         bytes.extend(encoded_packet.as_bytes().to_owned());
+    //     }
+
+    //     bytes
+    // }
+
+    pub fn encode_binary(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         for packet in self.packets.iter() {
             let encoded_packet = packet.encode();
-            let mut packet_len = encoded_packet.len().to_string();
-            packet_len.push(':');
-            bytes.extend(packet_len.as_bytes().to_owned());
+            let mut packet_len = encoded_packet.len();
+
+            let mut binary_len = Vec::new();
+
+            while packet_len != 0 {
+                binary_len.push((packet_len % 10) as u8);
+                packet_len /= 10;
+            }
+
+            bytes.extend(&[0]);
+            bytes.extend(binary_len.iter().rev());
+            bytes.extend(&[255]);
             bytes.extend(encoded_packet.as_bytes().to_owned());
         }
 
@@ -33,7 +56,6 @@ impl Payload {
             if data_type > 1 {
                 return Err(PayloadDecodeError {});
             }
-            println!("data type {}", data_type);
             bytes = &bytes[1..];
             let (start, end) = Self::get_next_packet_window(&bytes).unwrap();
 
@@ -58,7 +80,6 @@ impl Payload {
     pub fn get_next_packet_window(bytes: &[u8]) -> Result<(usize, usize), PayloadDecodeError> {
         let mut packet_len = 0;
         let mut start = 0;
-        println!("{:?}", bytes);
         for (index, byte) in bytes.iter().enumerate() {
             if *byte == 255 {
                 start = index + 1;
@@ -82,7 +103,7 @@ impl Payload {
             .unwrap_or_else(|e| panic!(e));
         let packet_len = packet_len_str
             .parse::<usize>()
-            .unwrap_or_else(|e| panic!("{:#?} {:#?}", e, packet_len_str));
+            .unwrap_or_else(|e| panic!("{:#?} {:#?}", e, String::from_utf8(bytes.to_vec())));
 
         let mut end = 0;
         let mut packets = vec![];
@@ -161,5 +182,13 @@ mod tests {
 
         assert_eq!(*first_packet, expected_first_packet);
         assert_eq!(*second_packet, expected_second_packet);
+    }
+
+    #[test]
+    fn test_payload_encoding() {
+        let payload = Payload::from_packet(Packet::new(PacketType::Ping, "")).encode_binary();
+        let ping_payload = [0, 1, 255, 50];
+
+        assert_eq!(payload, ping_payload);
     }
 }

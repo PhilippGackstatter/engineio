@@ -95,7 +95,6 @@ impl Packet {
             .chars()
             .next()
             .unwrap();
-        println!("packet type {:?}", packet_type);
         Ok(Packet {
             packet_type: packet_type.into(),
             encoded_data: PacketData::Bytes(bytes[1..].to_owned()),

@@ -4,6 +4,7 @@ use async_std::future::join;
 use async_std::task::JoinHandle;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 // const SUPPORTED_TRANSPORT: [&str; 1] = ["polling"];
 
@@ -53,11 +54,9 @@ impl Client {
     }
 
     pub async fn connect(url: &str) -> Result<Client, ConnectionError> {
-        // let client = surf::Client::new();
-        let connect_url = format!("{}?transport=polling", url);
+        let connect_url = format!("{}?transport=polling&EIO=3", url);
         println!("Establishing connection to {}", connect_url);
         let bytes = surf::get(&connect_url).recv_bytes().await.unwrap();
-        // println!("open:{:?}", bytes);
         let payload = Payload::from_str_colon_msg_format(&bytes).unwrap();
 
         if let PacketData::Str(string) = payload.packets().first().unwrap().data() {
@@ -86,25 +85,34 @@ impl Client {
     }
 
     fn get_url(config: &Arc<ClientConfig>) -> String {
-        format!("{}?transport=polling&sid={}", config.base_url, config.sid)
+        let time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        format!(
+            "{}?transport=polling&EIO=3&sid={}&t={}.{}",
+            config.base_url,
+            config.sid,
+            time.as_secs(),
+            time.subsec_nanos()
+        )
     }
 
     async fn ping_loop(config: Arc<ClientConfig>) {
-        let interval = std::time::Duration::new(config.ping_interval as u64, 0);
+        let interval = std::time::Duration::new((config.ping_interval / 1000) as u64, 0);
         loop {
             let payload = Payload::from_packet(Packet::new(PacketType::Ping, "probe"));
             let url = Client::get_url(&config);
-            println!("Sending ping to {}", url);
-            let _response = surf::post(&url).body_bytes(payload.encode()).await;
+            println!("Pinging (interval {}) {}", interval.as_secs(), url);
+            let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
             async_std::task::sleep(interval).await;
         }
     }
 
     async fn poll_loop(config: Arc<ClientConfig>) {
-        let url = Client::get_url(&config);
         #[allow(clippy::while_immutable_condition)]
         while config.conn_state == ConnectionState::Connected {
-            println!("POLLING");
+            let url = Client::get_url(&config);
+            println!("Polling {}", url);
             let bytes = surf::get(&url).recv_bytes().await.unwrap();
             let payload = match Payload::new(&bytes) {
                 Ok(pl) => pl,
@@ -112,11 +120,7 @@ impl Client {
             };
 
             for packet in payload.packets() {
-                if *packet.packet_type() == PacketType::Pong {
-                    println!("pong recv");
-                } else {
-                    println!("{:?} - {:?}", packet.packet_type(), packet.data());
-                }
+                println!("{:?} - {:?}", packet.packet_type(), packet.data());
             }
         }
     }
