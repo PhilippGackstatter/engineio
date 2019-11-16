@@ -2,6 +2,9 @@ use crate::packet::{Packet, PacketData, PacketType};
 use crate::payload::Payload;
 use async_std::future::join;
 use async_std::task::JoinHandle;
+use futures::channel::mpsc;
+use futures::sink::SinkExt;
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -17,6 +20,7 @@ enum ConnectionState {
 pub struct Client {
     ping_handle: JoinHandle<()>,
     poll_handle: JoinHandle<()>,
+    write_handle: JoinHandle<()>,
     // config: std::sync::Arc<ClientConfig>,
 }
 
@@ -50,7 +54,8 @@ impl Client {
     pub async fn serve(&mut self) {
         let ping = &mut self.ping_handle;
         let poll = &mut self.poll_handle;
-        join!(poll, ping).await;
+        let write = &mut self.write_handle;
+        join!(poll, ping, write).await;
     }
 
     pub async fn connect(url: &str) -> Result<Client, ConnectionError> {
@@ -62,6 +67,7 @@ impl Client {
         if let PacketData::Str(string) = payload.packets().first().unwrap().data() {
             let packet: OpenPacket = serde_json::from_str(string).unwrap();
             println!("Spawning tasks, sid is {}", packet.sid);
+            let (sender, receiver) = mpsc::unbounded();
             let config = std::sync::Arc::new(ClientConfig {
                 conn_state: ConnectionState::Connected,
                 sid: packet.sid,
@@ -70,11 +76,17 @@ impl Client {
                 // ping_timeout: packet.pingTimeout,
             });
 
-            let poll_handle = async_std::task::spawn(Client::poll_loop(Arc::clone(&config)));
-            let ping_handle = async_std::task::spawn(Client::ping_loop(Arc::clone(&config)));
+            let poll_handle =
+                async_std::task::spawn(Client::poll_loop(Arc::clone(&config), sender.clone()));
+            let ping_handle =
+                async_std::task::spawn(Client::ping_loop(Arc::clone(&config), sender.clone()));
+            let write_handle =
+                async_std::task::spawn(Client::write_loop(Arc::clone(&config), receiver));
+
             let eio_client = Client {
                 ping_handle,
                 poll_handle,
+                write_handle,
                 // config,
             };
 
@@ -97,18 +109,21 @@ impl Client {
         )
     }
 
-    async fn ping_loop(config: Arc<ClientConfig>) {
+    async fn ping_loop(
+        config: Arc<ClientConfig>,
+        mut write_channel: mpsc::UnboundedSender<Packet>,
+    ) {
         let interval = std::time::Duration::new((config.ping_interval / 1000) as u64, 0);
         loop {
-            let payload = Payload::from_packet(Packet::new(PacketType::Ping, "probe"));
-            let url = Client::get_url(&config);
-            println!("Pinging (interval {}) {}", interval.as_secs(), url);
-            let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
+            write_channel
+                .send(Packet::new(PacketType::Ping, "probe"))
+                .await
+                .unwrap();
             async_std::task::sleep(interval).await;
         }
     }
 
-    async fn poll_loop(config: Arc<ClientConfig>) {
+    async fn poll_loop(config: Arc<ClientConfig>, _write_channel: mpsc::UnboundedSender<Packet>) {
         #[allow(clippy::while_immutable_condition)]
         while config.conn_state == ConnectionState::Connected {
             let url = Client::get_url(&config);
@@ -122,6 +137,15 @@ impl Client {
             for packet in payload.packets() {
                 println!("{:?} - {:?}", packet.packet_type(), packet.data());
             }
+        }
+    }
+
+    async fn write_loop(config: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) {
+        while let Some(packet) = receiver.next().await {
+            println!("Sending packet {:?}", packet);
+            let payload = Payload::from_packet(packet);
+            let url = Client::get_url(&config);
+            let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
         }
     }
 }
