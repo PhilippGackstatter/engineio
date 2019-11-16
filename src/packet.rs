@@ -42,10 +42,16 @@ impl PacketType {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct Packet {
     packet_type: PacketType,
     encoded_data: PacketData,
+}
+
+impl std::fmt::Debug for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} - {:?}", self.packet_type(), self.data())
+    }
 }
 
 #[derive(Debug, PartialEq)]
