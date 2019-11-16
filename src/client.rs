@@ -124,7 +124,7 @@ impl Client {
             // We expect to have received a pong after this time
             if !config.ping_received.load(Ordering::SeqCst) {
                 println!("Pong not received, aborting");
-                config.is_connected.store(false, Ordering::Relaxed);
+                Self::disconnect(&config);
                 break;
             }
 
@@ -144,9 +144,7 @@ impl Client {
             };
 
             for packet in payload.packets() {
-                if *packet.packet_type() == PacketType::Pong {
-                    config.ping_received.store(true, Ordering::SeqCst);
-                }
+                Self::handle_packet(&config, &packet);
                 println!("Received {:?}", packet);
             }
         }
@@ -161,5 +159,28 @@ impl Client {
             let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
         }
         println!("Exit write loop");
+    }
+
+    fn handle_packet(config: &Arc<ClientConfig>, packet: &Packet) {
+        match packet.packet_type() {
+            PacketType::Pong => {
+                config.ping_received.store(true, Ordering::SeqCst);
+            }
+            PacketType::Close => {
+                Self::disconnect(config);
+            },
+            PacketType::Message => {
+
+            }
+            PacketType::Noop => (),
+            _ => {
+                println!("Unexpected packet {:?}", packet);
+            }
+        }
+    }
+
+    fn disconnect(config: &Arc<ClientConfig>) {
+        println!("Disconnecting");
+        config.is_connected.store(false, Ordering::Relaxed);
     }
 }
