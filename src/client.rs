@@ -6,16 +6,11 @@ use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 // const SUPPORTED_TRANSPORT: [&str; 1] = ["polling"];
-
-#[derive(PartialEq)]
-enum ConnectionState {
-    // Disconnected,
-    Connected,
-}
 
 pub struct Client {
     ping_handle: JoinHandle<()>,
@@ -25,11 +20,12 @@ pub struct Client {
 }
 
 pub struct ClientConfig {
-    conn_state: ConnectionState,
+    is_connected: AtomicBool,
     sid: String,
     base_url: String,
     ping_interval: u32,
-    // ping_timeout: u32,
+    ping_timeout: u32,
+    ping_received: AtomicBool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -69,11 +65,12 @@ impl Client {
             println!("Spawning tasks, sid is {}", packet.sid);
             let (sender, receiver) = mpsc::unbounded();
             let config = std::sync::Arc::new(ClientConfig {
-                conn_state: ConnectionState::Connected,
+                is_connected: AtomicBool::new(true),
                 sid: packet.sid,
                 base_url: url.to_owned(),
                 ping_interval: packet.pingInterval,
-                // ping_timeout: packet.pingTimeout,
+                ping_timeout: packet.pingTimeout,
+                ping_received: AtomicBool::new(true),
             });
 
             let poll_handle =
@@ -113,19 +110,37 @@ impl Client {
         config: Arc<ClientConfig>,
         mut write_channel: mpsc::UnboundedSender<Packet>,
     ) {
-        let interval = std::time::Duration::new((config.ping_interval / 1000) as u64, 0);
+        let timeout = std::time::Duration::new((config.ping_timeout / 1000) as u64, 0);
+        let interval = std::time::Duration::new(
+            (config.ping_interval / 1000 - config.ping_timeout / 1000) as u64,
+            0,
+        );
+        println!("Interval {:?}, Timeout {:?}", interval, timeout);
         loop {
             write_channel
                 .send(Packet::new(PacketType::Ping, "probe"))
                 .await
                 .unwrap();
+
+            config.ping_received.store(false, Ordering::SeqCst);
+
+            async_std::task::sleep(timeout).await;
+
+            // We expect to have received a pong after this time
+            if !config.ping_received.load(Ordering::SeqCst) {
+                println!("Pong not received, aborting");
+                config.is_connected.store(false, Ordering::Relaxed);
+                break;
+            }
+
             async_std::task::sleep(interval).await;
         }
+        println!("Exit ping loop");
     }
 
     async fn poll_loop(config: Arc<ClientConfig>, _write_channel: mpsc::UnboundedSender<Packet>) {
         #[allow(clippy::while_immutable_condition)]
-        while config.conn_state == ConnectionState::Connected {
+        while config.is_connected.load(Ordering::Relaxed) {
             let url = Client::get_url(&config);
             println!("Polling {}", url);
             let bytes = surf::get(&url).recv_bytes().await.unwrap();
@@ -135,17 +150,22 @@ impl Client {
             };
 
             for packet in payload.packets() {
-                println!("{:?} - {:?}", packet.packet_type(), packet.data());
+                if *packet.packet_type() == PacketType::Pong {
+                    config.ping_received.store(true, Ordering::SeqCst);
+                }
+                println!("Received {:?}", packet);
             }
         }
+        println!("Exit poll loop");
     }
 
     async fn write_loop(config: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) {
         while let Some(packet) = receiver.next().await {
-            println!("Sending packet {:?}", packet);
+            println!("Sending {:?}", packet);
             let payload = Payload::from_packet(packet);
             let url = Client::get_url(&config);
             let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
         }
+        println!("Exit write loop");
     }
 }
