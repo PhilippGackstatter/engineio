@@ -6,6 +6,8 @@ use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -51,7 +53,10 @@ impl Client {
         join!(poll, ping, write).await;
     }
 
-    pub async fn connect(url: &str) -> Result<Client, ConnectionError> {
+    pub async fn connect(
+        url: &str,
+        route: impl EventHandler + Send + 'static,
+    ) -> Result<Client, ConnectionError> {
         let connect_url = format!("{}?transport=polling&EIO=3", url);
         println!("Establishing connection to {}", connect_url);
         let bytes = surf::get(&connect_url).recv_bytes().await.unwrap();
@@ -70,7 +75,11 @@ impl Client {
                 ping_received: AtomicBool::new(true),
             });
 
-            let poll_handle = async_std::task::spawn(Client::poll_loop(Arc::clone(&config)));
+            let mut handlers = HashMap::new();
+            handlers.insert("fun".to_owned(), route);
+
+            let poll_handle =
+                async_std::task::spawn(Client::poll_loop(Arc::clone(&config), handlers));
             let ping_handle =
                 async_std::task::spawn(Client::ping_loop(Arc::clone(&config), sender.clone()));
             let write_handle =
@@ -133,7 +142,7 @@ impl Client {
         println!("Exit ping loop");
     }
 
-    async fn poll_loop(config: Arc<ClientConfig>) {
+    async fn poll_loop(config: Arc<ClientConfig>, handlers: HashMap<String, impl EventHandler>) {
         while config.is_connected.load(Ordering::Relaxed) {
             let url = Client::get_url(&config);
             println!("Polling {}", url);
@@ -144,7 +153,7 @@ impl Client {
             };
 
             for packet in payload.packets() {
-                Self::handle_packet(&config, &packet);
+                Self::handle_packet(&config, &packet, &handlers).await;
                 println!("Received {:?}", packet);
             }
         }
@@ -161,16 +170,22 @@ impl Client {
         println!("Exit write loop");
     }
 
-    fn handle_packet(config: &Arc<ClientConfig>, packet: &Packet) {
+    async fn handle_packet(
+        config: &Arc<ClientConfig>,
+        packet: &Packet,
+        handlers: &HashMap<String, impl EventHandler>,
+    ) {
         match packet.packet_type() {
             PacketType::Pong => {
                 config.ping_received.store(true, Ordering::SeqCst);
             }
             PacketType::Close => {
                 Self::disconnect(config);
-            },
+            }
             PacketType::Message => {
-
+                if let PacketData::Str(event_name) = packet.data() {
+                    Self::trigger_event(event_name, &handlers).await;
+                }
             }
             PacketType::Noop => (),
             _ => {
@@ -182,5 +197,54 @@ impl Client {
     fn disconnect(config: &Arc<ClientConfig>) {
         println!("Disconnecting");
         config.is_connected.store(false, Ordering::Relaxed);
+    }
+
+    async fn trigger_event(event_name: &str, handlers: &HashMap<String, impl EventHandler>) {
+        if let Some(event_handler) = handlers.get(event_name) {
+            println!("Trigger event {}", event_name);
+            event_handler.call().await;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ClientError {}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "()")
+    }
+}
+
+impl std::error::Error for ClientError {}
+
+pub trait EventHandler: Send + Sync + 'static {
+    /// The async result of `call`.
+    type Fut: Future<Output = ClientError> + Send + 'static;
+
+    /// Invoke the endpoint within the given context
+    fn call(&self) -> Self::Fut;
+}
+
+use futures::future::BoxFuture;
+
+// Implement EventHandler for all functions with a
+// Future as return type
+// Allows passing async fns as event handlers
+impl<F: Send + Sync + 'static, Fut> EventHandler for F
+where
+    F: Fn() -> Fut,
+    Fut: Future + Send + 'static,
+    Fut::Output: std::error::Error,
+{
+    type Fut = BoxFuture<'static, ClientError>;
+
+    fn call(&self) -> Self::Fut {
+        let fut = (self)();
+
+        Box::pin(async move {
+            fut.await;
+            ClientError {}
+        })
     }
 }
