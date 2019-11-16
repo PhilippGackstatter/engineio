@@ -10,13 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-// const SUPPORTED_TRANSPORT: [&str; 1] = ["polling"];
-
 pub struct Client {
     ping_handle: JoinHandle<()>,
     poll_handle: JoinHandle<()>,
     write_handle: JoinHandle<()>,
-    // config: std::sync::Arc<ClientConfig>,
 }
 
 pub struct ClientConfig {
@@ -73,8 +70,7 @@ impl Client {
                 ping_received: AtomicBool::new(true),
             });
 
-            let poll_handle =
-                async_std::task::spawn(Client::poll_loop(Arc::clone(&config), sender.clone()));
+            let poll_handle = async_std::task::spawn(Client::poll_loop(Arc::clone(&config)));
             let ping_handle =
                 async_std::task::spawn(Client::ping_loop(Arc::clone(&config), sender.clone()));
             let write_handle =
@@ -84,7 +80,6 @@ impl Client {
                 ping_handle,
                 poll_handle,
                 write_handle,
-                // config,
             };
 
             Ok(eio_client)
@@ -138,8 +133,7 @@ impl Client {
         println!("Exit ping loop");
     }
 
-    async fn poll_loop(config: Arc<ClientConfig>, _write_channel: mpsc::UnboundedSender<Packet>) {
-        #[allow(clippy::while_immutable_condition)]
+    async fn poll_loop(config: Arc<ClientConfig>) {
         while config.is_connected.load(Ordering::Relaxed) {
             let url = Client::get_url(&config);
             println!("Polling {}", url);
