@@ -3,4 +3,4 @@ mod packet;
 mod payload;
 
 pub use client::Client;
-pub use client::ClientError;
+pub use client::ClientBuilder;
