@@ -126,7 +126,7 @@ pub struct PayloadDecodeError {}
 
 impl From<std::num::ParseIntError> for PayloadDecodeError {
     fn from(error: std::num::ParseIntError) -> Self {
-        println!("{:#?}", error);
+        log::error!("{:#?}", error);
         unimplemented!();
     }
 }

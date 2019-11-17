@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use log::{debug,error,info};
+
 #[derive(Default)]
 pub struct ClientBuilder {
     handlers: FnvHashMap<String, Box<DynEventHandler>>,
@@ -101,13 +103,13 @@ impl Client {
         handlers: FnvHashMap<String, Box<DynEventHandler>>,
     ) -> Result<Client, ConnectionError> {
         let connect_url = format!("{}?transport=polling&EIO=3", url);
-        println!("Establishing connection to {}", connect_url);
+        info!("Establishing connection to {}", connect_url);
         let bytes = surf::get(&connect_url).recv_bytes().await.unwrap();
         let payload = Payload::from_str_colon_msg_format(&bytes).unwrap();
 
         if let PacketData::Str(string) = payload.packets().first().unwrap().data() {
             let packet: OpenPacket = serde_json::from_str(string).unwrap();
-            println!("Spawning tasks, sid is {}", packet.sid);
+            debug!("Spawning tasks, sid is {}", packet.sid);
             let (sender, receiver) = mpsc::unbounded();
 
             let config = Arc::new(ClientConfig {
@@ -166,7 +168,7 @@ impl ClientConfig {
             (self.ping_interval / 1000 - self.ping_timeout / 1000) as u64,
             0,
         );
-        println!("Interval {:?}, Timeout {:?}", interval, timeout);
+        debug!("Interval {:?}, Timeout {:?}", interval, timeout);
         loop {
             write_channel
                 .send(Packet::with_str(PacketType::Ping, "probe"))
@@ -179,20 +181,20 @@ impl ClientConfig {
 
             // We expect to have received a pong after this time
             if !self.ping_received.load(Ordering::SeqCst) {
-                println!("Pong not received, aborting");
+                error!("Pong not received, aborting");
                 Self::disconnect(&self).await;
                 break;
             }
 
             async_std::task::sleep(interval).await;
         }
-        println!("Exit ping loop");
+        debug!("Exit ping loop");
     }
 
     async fn poll_loop(self: Arc<ClientConfig>) {
         while self.is_connected.load(Ordering::Relaxed) {
             let url = Self::get_url(&self);
-            println!("Polling {}", url);
+            debug!("Polling {}", url);
             let bytes = surf::get(&url).recv_bytes().await.unwrap();
             let payload = match Payload::new(&bytes) {
                 Ok(pl) => pl,
@@ -201,20 +203,20 @@ impl ClientConfig {
 
             for packet in payload.packets() {
                 Self::handle_packet(&self, &packet).await;
-                println!("Received {:?}", packet);
+                debug!("Received {:?}", packet);
             }
         }
-        println!("Exit poll loop");
+        debug!("Exit poll loop");
     }
 
     async fn write_loop(self: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) {
         while let Some(packet) = receiver.next().await {
-            println!("Sending {:?}", packet);
+            debug!("Sending {:?}", packet);
             let payload = Payload::from_packet(packet);
             let url = Self::get_url(&self);
             let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
         }
-        println!("Exit write loop");
+        debug!("Exit write loop");
     }
 
     async fn handle_packet(config: &Arc<ClientConfig>, packet: &Packet) {
@@ -232,20 +234,20 @@ impl ClientConfig {
             }
             PacketType::Noop => (),
             _ => {
-                println!("Unexpected packet {:?}", packet);
+                error!("Unexpected packet {:?}", packet);
             }
         }
     }
 
     async fn disconnect(config: &Arc<ClientConfig>) {
-        println!("Disconnecting");
+        info!("Disconnecting");
         config.is_connected.store(false, Ordering::Relaxed);
         Self::trigger_event("disconnect", config).await;
     }
 
     async fn trigger_event(event_name: &str, config: &Arc<ClientConfig>) {
         if let Some(event_handler) = config.handlers.get(event_name) {
-            println!("Trigger event {}", event_name);
+            debug!("Trigger event {}", event_name);
             event_handler().await;
         }
     }

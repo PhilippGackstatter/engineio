@@ -9,3 +9,5 @@ edition = "2018"
 [dependencies]
 engineio = { path = "../" }
 async-std = "0.99.12"
+log = "0.4.8"
+simple_logger = "1.3.0"
