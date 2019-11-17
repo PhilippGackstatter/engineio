@@ -2,6 +2,7 @@ use crate::packet::{Packet, PacketData, PacketType};
 use crate::payload::Payload;
 use async_std::future::join;
 use async_std::task::{self, JoinHandle};
+use fnv::FnvHashMap;
 use futures::channel::mpsc;
 use futures::future::{BoxFuture, FutureExt};
 use futures::sink::SinkExt;
@@ -16,13 +17,13 @@ use std::time::SystemTime;
 
 #[derive(Default)]
 pub struct ClientBuilder {
-    handlers: HashMap<String, Box<DynEventHandler>>,
+    handlers: FnvHashMap<String, Box<DynEventHandler>>,
 }
 
 impl ClientBuilder {
     pub fn new() -> Self {
         ClientBuilder {
-            handlers: HashMap::new(),
+            handlers: FnvHashMap::default(),
         }
     }
 
@@ -66,7 +67,7 @@ pub struct ClientConfig {
     ping_interval: u32,
     ping_timeout: u32,
     ping_received: AtomicBool,
-    handlers: HashMap<String, Box<DynEventHandler>>,
+    handlers: FnvHashMap<String, Box<DynEventHandler>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -97,7 +98,7 @@ impl Client {
 
     pub async fn connect(
         url: &str,
-        handlers: HashMap<String, Box<DynEventHandler>>,
+        handlers: FnvHashMap<String, Box<DynEventHandler>>,
     ) -> Result<Client, ConnectionError> {
         let connect_url = format!("{}?transport=polling&EIO=3", url);
         println!("Establishing connection to {}", connect_url);

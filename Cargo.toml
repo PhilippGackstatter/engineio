@@ -12,3 +12,4 @@ serde =  { version = "1.0.102", features = ["derive"]}
 surf = { version = "1.0.3", features = ["curl-client"] }
 async-std = "0.99.12"
 futures-preview = { version = "0.3.0-alpha.19", features = [ "async-await" ] }
+fnv = "1.0.6"
