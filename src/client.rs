@@ -1,7 +1,7 @@
 use crate::packet::{Packet, PacketData, PacketType};
 use crate::payload::Payload;
 use async_std::future::join;
-use async_std::task::JoinHandle;
+use async_std::task::{self, JoinHandle};
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
@@ -66,6 +66,7 @@ impl Client {
             let packet: OpenPacket = serde_json::from_str(string).unwrap();
             println!("Spawning tasks, sid is {}", packet.sid);
             let (sender, receiver) = mpsc::unbounded();
+
             let config = std::sync::Arc::new(ClientConfig {
                 is_connected: AtomicBool::new(true),
                 sid: packet.sid,
@@ -78,12 +79,9 @@ impl Client {
             let mut handlers = HashMap::new();
             handlers.insert("fun".to_owned(), route);
 
-            let poll_handle =
-                async_std::task::spawn(Client::poll_loop(Arc::clone(&config), handlers));
-            let ping_handle =
-                async_std::task::spawn(Client::ping_loop(Arc::clone(&config), sender.clone()));
-            let write_handle =
-                async_std::task::spawn(Client::write_loop(Arc::clone(&config), receiver));
+            let poll_handle = task::spawn(Arc::clone(&config).poll_loop(handlers));
+            let ping_handle = task::spawn(Arc::clone(&config).ping_loop(sender.clone()));
+            let write_handle = task::spawn(Arc::clone(&config).write_loop(receiver));
 
             let eio_client = Client {
                 ping_handle,
@@ -96,7 +94,10 @@ impl Client {
             panic!("expected string");
         }
     }
+}
 
+impl ClientConfig {
+    // self: &Arc<ClientConfig> is not yet supported (#64325)
     fn get_url(config: &Arc<ClientConfig>) -> String {
         let time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -110,13 +111,10 @@ impl Client {
         )
     }
 
-    async fn ping_loop(
-        config: Arc<ClientConfig>,
-        mut write_channel: mpsc::UnboundedSender<Packet>,
-    ) {
-        let timeout = std::time::Duration::new((config.ping_timeout / 1000) as u64, 0);
+    async fn ping_loop(self: Arc<ClientConfig>, mut write_channel: mpsc::UnboundedSender<Packet>) {
+        let timeout = std::time::Duration::new((self.ping_timeout / 1000) as u64, 0);
         let interval = std::time::Duration::new(
-            (config.ping_interval / 1000 - config.ping_timeout / 1000) as u64,
+            (self.ping_interval / 1000 - self.ping_timeout / 1000) as u64,
             0,
         );
         println!("Interval {:?}, Timeout {:?}", interval, timeout);
@@ -126,14 +124,14 @@ impl Client {
                 .await
                 .unwrap();
 
-            config.ping_received.store(false, Ordering::SeqCst);
+            self.ping_received.store(false, Ordering::SeqCst);
 
             async_std::task::sleep(timeout).await;
 
             // We expect to have received a pong after this time
-            if !config.ping_received.load(Ordering::SeqCst) {
+            if !self.ping_received.load(Ordering::SeqCst) {
                 println!("Pong not received, aborting");
-                Self::disconnect(&config);
+                Self::disconnect(&self);
                 break;
             }
 
@@ -142,9 +140,9 @@ impl Client {
         println!("Exit ping loop");
     }
 
-    async fn poll_loop(config: Arc<ClientConfig>, handlers: HashMap<String, impl EventHandler>) {
-        while config.is_connected.load(Ordering::Relaxed) {
-            let url = Client::get_url(&config);
+    async fn poll_loop(self: Arc<ClientConfig>, handlers: HashMap<String, impl EventHandler>) {
+        while self.is_connected.load(Ordering::Relaxed) {
+            let url = Self::get_url(&self);
             println!("Polling {}", url);
             let bytes = surf::get(&url).recv_bytes().await.unwrap();
             let payload = match Payload::new(&bytes) {
@@ -153,18 +151,18 @@ impl Client {
             };
 
             for packet in payload.packets() {
-                Self::handle_packet(&config, &packet, &handlers).await;
+                Self::handle_packet(&self, &packet, &handlers).await;
                 println!("Received {:?}", packet);
             }
         }
         println!("Exit poll loop");
     }
 
-    async fn write_loop(config: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) {
+    async fn write_loop(self: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) {
         while let Some(packet) = receiver.next().await {
             println!("Sending {:?}", packet);
             let payload = Payload::from_packet(packet);
-            let url = Client::get_url(&config);
+            let url = Self::get_url(&self);
             let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
         }
         println!("Exit write loop");
