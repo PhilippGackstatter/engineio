@@ -61,7 +61,14 @@ pub enum PacketData {
 }
 
 impl Packet {
-    pub fn new(packet_type: PacketType, encoded_data: &str) -> Self {
+    pub fn new(packet_type: PacketType, encoded_data: PacketData) -> Self {
+        Packet {
+            packet_type,
+            encoded_data,
+        }
+    }
+
+    pub fn with_str(packet_type: PacketType, encoded_data: &str) -> Self {
         Packet {
             packet_type,
             encoded_data: PacketData::Str(encoded_data.to_owned()),

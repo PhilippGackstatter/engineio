@@ -141,7 +141,7 @@ mod tests {
         let input = r#"96:0{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#;
 
         let result = Payload::from_str_colon_msg_format(&input.as_bytes()).unwrap();
-        let expected = Packet::new( PacketType::Open,
+        let expected = Packet::with_str( PacketType::Open,
              r#"{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#);
 
         assert_eq!(*result.packets.first().unwrap(), expected);
@@ -153,7 +153,7 @@ mod tests {
         input.push_str(&input.clone());
         input.push_str(&input.clone());
         let result = Payload::from_str_colon_msg_format(&input.as_bytes()).unwrap();
-        let expected = Packet::new( PacketType::Open,
+        let expected = Packet::with_str( PacketType::Open,
             r#"{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#);
 
         let mut iter_count = 0;
@@ -176,7 +176,7 @@ mod tests {
         let first_packet = packets.next().unwrap();
         let second_packet = packets.next().unwrap();
 
-        let expected_first_packet = Packet::new(PacketType::Message, "utf 8 string");
+        let expected_first_packet = Packet::with_str(PacketType::Message, "utf 8 string");
         let expected_second_packet =
             Packet::with_bytes(PacketType::Message, vec![0, 1, 2, 3, 4, 5]);
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_payload_encoding() {
-        let payload = Payload::from_packet(Packet::new(PacketType::Ping, "")).encode_binary();
+        let payload = Payload::from_packet(Packet::with_str(PacketType::Ping, "")).encode_binary();
         let ping_payload = [0, 1, 255, 50];
 
         assert_eq!(payload, ping_payload);

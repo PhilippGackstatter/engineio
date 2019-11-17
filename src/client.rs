@@ -8,7 +8,6 @@ use futures::future::{BoxFuture, FutureExt};
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::future::Future;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,6 +52,7 @@ impl ClientBuilder {
 }
 
 pub struct Client {
+    write_channel: mpsc::UnboundedSender<Packet>,
     ping_handle: JoinHandle<()>,
     poll_handle: JoinHandle<()>,
     write_handle: JoinHandle<()>,
@@ -125,6 +125,7 @@ impl Client {
             let write_handle = task::spawn(Arc::clone(&config).write_loop(receiver));
 
             let eio_client = Client {
+                write_channel: sender.clone(),
                 ping_handle,
                 poll_handle,
                 write_handle,
@@ -134,6 +135,13 @@ impl Client {
         } else {
             panic!("expected string");
         }
+    }
+
+    pub async fn emit(&mut self, data: PacketData) {
+        self.write_channel
+            .send(Packet::new(PacketType::Message, data))
+            .await
+            .unwrap();
     }
 }
 
@@ -161,7 +169,7 @@ impl ClientConfig {
         println!("Interval {:?}, Timeout {:?}", interval, timeout);
         loop {
             write_channel
-                .send(Packet::new(PacketType::Ping, "probe"))
+                .send(Packet::with_str(PacketType::Ping, "probe"))
                 .await
                 .unwrap();
 
