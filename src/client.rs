@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use log::{debug,error,info};
+use log::{debug, error, info};
 
 #[derive(Default)]
 pub struct ClientBuilder {
@@ -44,7 +44,7 @@ impl ClientBuilder {
     }
 
     fn add(&mut self, event_name: &str, event_handler: impl EventHandler) {
-        let dyn_handler = Box::new(move || event_handler.call().boxed());
+        let dyn_handler = Box::new(move |data| event_handler.call(data).boxed());
         self.handlers.insert(event_name.to_owned(), dyn_handler);
     }
 
@@ -60,7 +60,8 @@ pub struct Client {
     write_handle: JoinHandle<()>,
 }
 
-pub(crate) type DynEventHandler = dyn (Fn() -> BoxFuture<'static, ()>) + 'static + Send + Sync;
+pub(crate) type DynEventHandler =
+    dyn (Fn(PacketData) -> BoxFuture<'static, ()>) + 'static + Send + Sync;
 
 pub struct ClientConfig {
     is_connected: AtomicBool,
@@ -140,6 +141,7 @@ impl Client {
     }
 
     pub async fn emit(&mut self, data: PacketData) {
+        info!("Emitting {:?}", data);
         self.write_channel
             .send(Packet::new(PacketType::Message, data))
             .await
@@ -201,9 +203,9 @@ impl ClientConfig {
                 Err(_) => Payload::from_str_colon_msg_format(&bytes).unwrap(),
             };
 
-            for packet in payload.packets() {
-                Self::handle_packet(&self, &packet).await;
+            for packet in payload.into_packets() {
                 debug!("Received {:?}", packet);
+                Self::handle_packet(&self, packet).await;
             }
         }
         debug!("Exit poll loop");
@@ -219,7 +221,7 @@ impl ClientConfig {
         debug!("Exit write loop");
     }
 
-    async fn handle_packet(config: &Arc<ClientConfig>, packet: &Packet) {
+    async fn handle_packet(config: &Arc<ClientConfig>, packet: Packet) {
         match packet.packet_type() {
             PacketType::Pong => {
                 config.ping_received.store(true, Ordering::SeqCst);
@@ -228,9 +230,7 @@ impl ClientConfig {
                 Self::disconnect(config).await;
             }
             PacketType::Message => {
-                if let PacketData::Str(_event_name) = packet.data() {
-                    Self::trigger_event("message", config).await;
-                }
+                Self::trigger_event("message", config, packet.into_data()).await;
             }
             PacketType::Noop => (),
             _ => {
@@ -242,13 +242,13 @@ impl ClientConfig {
     async fn disconnect(config: &Arc<ClientConfig>) {
         info!("Disconnecting");
         config.is_connected.store(false, Ordering::Relaxed);
-        Self::trigger_event("disconnect", config).await;
+        Self::trigger_event("disconnect", config, PacketData::Str("".to_owned())).await;
     }
 
-    async fn trigger_event(event_name: &str, config: &Arc<ClientConfig>) {
+    async fn trigger_event(event_name: &str, config: &Arc<ClientConfig>, event_data: PacketData) {
         if let Some(event_handler) = config.handlers.get(event_name) {
             debug!("Trigger event {}", event_name);
-            event_handler().await;
+            event_handler(event_data).await;
         }
     }
 }
@@ -257,8 +257,8 @@ pub trait EventHandler: Send + Sync + 'static {
     /// The async result of `call`.
     type Fut: Future<Output = ()> + Send + 'static;
 
-    /// Invoke the endpoint within the given context
-    fn call(&self) -> Self::Fut;
+    /// Invoke the event handler with the received data
+    fn call(&self, data: PacketData) -> Self::Fut;
 }
 
 // Implement EventHandler for all functions with a
@@ -266,14 +266,14 @@ pub trait EventHandler: Send + Sync + 'static {
 // Allows passing async fns as event handlers
 impl<F: Send + Sync + 'static, Fut> EventHandler for F
 where
-    F: Fn() -> Fut,
+    F: Fn(PacketData) -> Fut,
     Fut: Future + Send + 'static,
     // Fut::Output: (),
 {
     type Fut = BoxFuture<'static, ()>;
 
-    fn call(&self) -> Self::Fut {
-        let fut = (self)();
+    fn call(&self, data: PacketData) -> Self::Fut {
+        let fut = (self)(data);
 
         Box::pin(async move {
             fut.await;

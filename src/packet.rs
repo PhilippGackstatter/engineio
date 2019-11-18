@@ -87,6 +87,10 @@ impl Packet {
         &self.encoded_data
     }
 
+    pub fn into_data(self) -> PacketData {
+        self.encoded_data
+    }
+
     pub fn packet_type(&self) -> &PacketType {
         &self.packet_type
     }

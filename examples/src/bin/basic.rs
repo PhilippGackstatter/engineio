@@ -1,4 +1,4 @@
-use engineio::ClientBuilder;
+use engineio::{ClientBuilder, PacketData};
 
 fn main() {
     log::set_max_level(log::LevelFilter::Debug);
@@ -13,18 +13,26 @@ fn main() {
             .build(url_str)
             .await
             .unwrap();
+
         client.serve().await;
     });
 }
 
-async fn connect() {
+async fn connect(_data: PacketData) {
     println!("connect");
 }
 
-async fn disconnect() {
+async fn disconnect(_data: PacketData) {
     println!("disconnect");
 }
 
-async fn message() {
-    println!("msg");
+async fn message(data: PacketData) {
+    match data {
+        PacketData::Str(str_) => {
+            println!("{}", str_);
+        }
+        PacketData::Bytes(bytes) => {
+            println!("{:?}", bytes);
+        }
+    }
 }

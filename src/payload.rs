@@ -77,6 +77,10 @@ impl Payload {
         &self.packets
     }
 
+    pub fn into_packets(self) -> Vec<Packet> {
+        self.packets
+    }
+
     pub fn get_next_packet_window(bytes: &[u8]) -> Result<(usize, usize), PayloadDecodeError> {
         let mut packet_len = 0;
         let mut start = 0;
