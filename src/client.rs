@@ -140,7 +140,11 @@ impl Client {
         }
     }
 
-    pub async fn emit(&mut self, data: PacketData) {
+    pub async fn emit_str(&mut self, data: String) {
+        self.emit(PacketData::Str(data)).await;
+    }
+
+    async fn emit(&mut self, data: PacketData) {
         info!("Emitting {:?}", data);
         self.write_channel
             .send(Packet::new(PacketType::Message, data))

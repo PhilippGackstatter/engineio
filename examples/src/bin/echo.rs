@@ -24,7 +24,7 @@ fn main() {
 
         while let Some(line) = lines.next().await {
             let line = line.unwrap();
-            client.emit(PacketData::Str(line.clone())).await;
+            client.emit_str(line).await;
         }
     });
 }
