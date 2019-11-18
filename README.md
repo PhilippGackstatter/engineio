@@ -55,3 +55,17 @@ while let Some(line) = lines.next().await {
     client.emit_str(line?).await;
 }
 ```
+
+On the server side we can use the JavaScript `engineio` implementation to send back any received data.
+
+```js
+var engine = require("engine.io");
+var server = engine.listen(8080);
+
+server.on("connection", function(socket) {
+  socket.on("message", function(data) {
+    console.log(data);
+    socket.send(data);
+  });
+});
+```
