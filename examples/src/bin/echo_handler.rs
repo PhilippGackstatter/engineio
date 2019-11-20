@@ -1,34 +1,32 @@
 use async_std::io;
 use async_std::prelude::*;
-use engineio::{EventHandler, PacketData, Client};
 use async_trait::async_trait;
+use engineio::{Client, EventHandler, PacketData};
 
-fn main() {
+#[async_std::main]
+async fn main() -> std::io::Result<()> {
     log::set_max_level(log::LevelFilter::Info);
-    // simple_logger::init().unwrap();
+    simple_logger::init().unwrap();
 
-    async_std::task::block_on(async {
-        let url_str = "http://localhost:8080/engine.io/";
-        let handler = Handler {};
-        let mut client = Client::connect(url_str, handler)
-            .await
-            .unwrap();
+    let url_str = "http://localhost:8080/engine.io/";
+    let handler = Handler {};
+    let mut client = Client::connect(url_str, handler).await.unwrap();
 
-        let stdin = io::stdin();
-        let reader = io::BufReader::new(stdin);
-        let mut lines = reader.lines();
+    let stdin = io::stdin();
+    let reader = io::BufReader::new(stdin);
+    let mut lines = reader.lines();
 
-        println!("Type something...");
+    println!("Type something...");
 
-        while let Some(line) = lines.next().await {
-            let line = line.unwrap();
-            client.emit_str(line).await;
-        }
-    });
+    while let Some(line) = lines.next().await {
+        let line = line.unwrap();
+        client.emit_str(line).await;
+    }
+
+    Ok(())
 }
 
-struct Handler {
-}
+struct Handler {}
 
 #[async_trait]
 impl EventHandler for Handler {

@@ -1,38 +1,38 @@
-use engineio::{ClientBuilder, PacketData};
+use async_trait::async_trait;
+use engineio::{Client, EventHandler, PacketData};
 
-fn main() {
-    log::set_max_level(log::LevelFilter::Debug);
+#[async_std::main]
+async fn main() {
+    log::set_max_level(log::LevelFilter::Info);
     simple_logger::init().unwrap();
 
-    async_std::task::block_on(async {
-        let url_str = "http://localhost:8080/engine.io/";
-        let mut client = ClientBuilder::new()
-            .connect_handler(connect)
-            .disconnect_handler(disconnect)
-            .message_handler(message)
-            .build(url_str)
-            .await
-            .unwrap();
+    let url_str = "http://localhost:8080/engine.io/";
+    let handler = Handler {};
+    let mut client = Client::connect(url_str, handler).await.unwrap();
 
-        client.serve().await;
-    });
+    client.join().await;
 }
 
-async fn connect(_data: PacketData) {
-    println!("connect");
-}
+struct Handler {}
 
-async fn disconnect(_data: PacketData) {
-    println!("disconnect");
-}
+#[async_trait]
+impl EventHandler for Handler {
+    async fn on_connect(&mut self) {
+        println!("connect");
+    }
 
-async fn message(data: PacketData) {
-    match data {
-        PacketData::Str(str_) => {
-            println!("{}", str_);
-        }
-        PacketData::Bytes(bytes) => {
-            println!("{:?}", bytes);
+    async fn on_disconnect(&mut self) {
+        println!("disconnect");
+    }
+
+    async fn on_message(&mut self, data: PacketData) {
+        match data {
+            PacketData::Str(str_) => {
+                println!("{}", str_);
+            }
+            PacketData::Bytes(bytes) => {
+                println!("{:?}", bytes);
+            }
         }
     }
 }
