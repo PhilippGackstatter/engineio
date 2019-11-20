@@ -1,9 +1,9 @@
 use crate::packet::{Packet, PacketData, PacketType};
 use crate::payload::Payload;
-use async_std::future::join;
 use async_std::task::{self, JoinHandle};
 use async_trait::async_trait;
 use futures::channel::mpsc;
+use futures::join;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -52,11 +52,12 @@ struct OpenPacket {
 pub struct ConnectionError {}
 
 impl Client {
-    pub async fn serve(&mut self) {
-        let ping = &mut self.ping_handle;
-        let poll = &mut self.poll_handle;
-        let write = &mut self.write_handle;
-        join!(poll, ping, write).await;
+    pub async fn join(&mut self) {
+        join!(
+            &mut self.poll_handle,
+            &mut self.write_handle,
+            &mut self.ping_handle,
+        );
     }
 
     pub async fn connect(
