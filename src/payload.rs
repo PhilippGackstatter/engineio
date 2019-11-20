@@ -8,6 +8,25 @@ pub struct Payload {
 }
 
 impl Payload {
+    /// Create a new payload by decoding the provided bytes into
+    /// packets.
+    pub fn new(bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
+        // If a packet starts with a 0 or 1 it is _encoded_ as binary
+        // If it's 0, then the content is a UTF-8 String
+        // If it's 1, then the content itself is binary
+        // If it's anything else, we assume the _encoding_ is text
+        if !bytes.is_empty() {
+            let data_type = bytes[0];
+            if data_type <= 1 {
+                Self::decode_binary(bytes)
+            } else {
+                Self::decode_text(bytes)
+            }
+        } else {
+            Err(PayloadDecodeError {})
+        }
+    }
+
     pub fn from_packet(p: Packet) -> Self {
         Self { packets: vec![p] }
     }
@@ -49,19 +68,6 @@ impl Payload {
         bytes
     }
 
-    pub fn new(bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
-        if !bytes.is_empty() {
-            let data_type = bytes[0];
-            if data_type > 1 {
-                Self::decode_text(bytes)
-            } else {
-                Self::decode_binary(bytes)
-            }
-        } else {
-            Err(PayloadDecodeError {})
-        }
-    }
-
     pub fn packets(&self) -> &Vec<Packet> {
         &self.packets
     }
@@ -70,7 +76,7 @@ impl Payload {
         self.packets
     }
 
-    pub fn decode_binary(mut bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
+    fn decode_binary(mut bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
         let mut packets = Vec::new();
 
         while !bytes.is_empty() {
@@ -94,7 +100,7 @@ impl Payload {
         Ok(Payload { packets })
     }
 
-    pub fn get_next_packet_window(bytes: &[u8]) -> Result<Range<usize>, PayloadDecodeError> {
+    fn get_next_packet_window(bytes: &[u8]) -> Result<Range<usize>, PayloadDecodeError> {
         let mut packet_len = 0;
         let mut start = 0;
         for (index, byte) in bytes.iter().enumerate() {
@@ -182,6 +188,29 @@ mod tests {
     }
 
     #[test]
+    fn test_xhr_decoding() {
+        let p = Payload::new(b"4:4abc").unwrap();
+        assert_eq!(p.packets()[0], Packet::with_str(PacketType::Message, "abc"));
+    }
+
+    #[test]
+    fn test_xhr2_encoding() {
+        let binary = Payload::new(b"8:4message").unwrap().encode_binary();
+        let mut expected = vec![0, 8, 255];
+        expected.extend(b"4message");
+
+        assert_eq!(binary, expected);
+    }
+
+    #[test]
+    fn test_xhr2_encoding_2() {
+        let payload = Payload::from_packet(Packet::with_str(PacketType::Ping, "")).encode_binary();
+        let ping_payload = [0, 1, 255, 50];
+
+        assert_eq!(payload, ping_payload);
+    }
+
+    #[test]
     fn test_payload_decoding_of_mixed_content() {
         let bytes = [
             0, 1, 3, 255, 52, 117, 116, 102, 32, 56, 32, 115, 116, 114, 105, 110, 103, 1, 7, 255,
@@ -202,10 +231,23 @@ mod tests {
     }
 
     #[test]
-    fn test_payload_encoding() {
-        let payload = Payload::from_packet(Packet::with_str(PacketType::Ping, "")).encode_binary();
-        let ping_payload = [0, 1, 255, 50];
+    fn test_multi_binary_payload() {
+        let mut bytes = vec![0, 4, 255];
+        bytes.extend(b"4msg");
+        bytes.extend(&[0, 4, 255]);
+        bytes.extend(b"4eng");
 
-        assert_eq!(payload, ping_payload);
+        let payload = Payload::new(&bytes).unwrap();
+
+        assert_eq!(
+            payload.packets()[0],
+            Packet::with_str(PacketType::Message, "msg")
+        );
+        assert_eq!(
+            payload.packets()[1],
+            Packet::with_str(PacketType::Message, "eng")
+        );
+
+        assert_eq!(payload.encode_binary(), bytes);
     }
 }
