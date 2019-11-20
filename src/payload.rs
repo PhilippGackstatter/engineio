@@ -1,4 +1,5 @@
 use crate::packet::Packet;
+use std::ops::Range;
 use std::str::FromStr;
 
 #[derive(Debug, PartialEq)]
@@ -48,29 +49,17 @@ impl Payload {
         bytes
     }
 
-    pub fn new(mut bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
-        let mut packets = Vec::new();
-
-        while !bytes.is_empty() {
+    pub fn new(bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
+        if !bytes.is_empty() {
             let data_type = bytes[0];
             if data_type > 1 {
-                return Err(PayloadDecodeError {});
-            }
-            bytes = &bytes[1..];
-            let (start, end) = Self::get_next_packet_window(&bytes).unwrap();
-
-            if data_type == 1 {
-                let packet = Packet::from_bytes(&bytes[start..end]).unwrap();
-                packets.push(packet);
+                Self::decode_text(bytes)
             } else {
-                let string = String::from_utf8(bytes[start..end].into()).unwrap();
-                packets.push(Packet::from_str(&string).unwrap());
+                Self::decode_binary(bytes)
             }
-
-            bytes = &bytes[end..];
+        } else {
+            Err(PayloadDecodeError {})
         }
-
-        Ok(Payload { packets })
     }
 
     pub fn packets(&self) -> &Vec<Packet> {
@@ -81,7 +70,31 @@ impl Payload {
         self.packets
     }
 
-    pub fn get_next_packet_window(bytes: &[u8]) -> Result<(usize, usize), PayloadDecodeError> {
+    pub fn decode_binary(mut bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
+        let mut packets = Vec::new();
+
+        while !bytes.is_empty() {
+            let data_type = bytes[0];
+            bytes = &bytes[1..];
+
+            let window = Self::get_next_packet_window(&bytes).unwrap();
+            let end = window.end;
+
+            if data_type == 1 {
+                let packet = Packet::from_bytes(&bytes[window]).unwrap();
+                packets.push(packet);
+            } else {
+                let string = String::from_utf8(bytes[window].into()).unwrap();
+                packets.push(Packet::from_str(&string).unwrap());
+            }
+
+            bytes = &bytes[end..];
+        }
+
+        Ok(Payload { packets })
+    }
+
+    pub fn get_next_packet_window(bytes: &[u8]) -> Result<Range<usize>, PayloadDecodeError> {
         let mut packet_len = 0;
         let mut start = 0;
         for (index, byte) in bytes.iter().enumerate() {
@@ -93,10 +106,10 @@ impl Payload {
             }
         }
 
-        Ok((start, packet_len + start))
+        Ok(start..packet_len + start)
     }
 
-    pub fn from_str_colon_msg_format(mut bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    fn decode_text(mut bytes: &[u8]) -> Result<Self, PayloadDecodeError> {
         let colon_index = bytes
             .iter()
             .position(|byte| *byte == b':')
@@ -115,7 +128,7 @@ impl Payload {
         while end < bytes.len() + 1 {
             end = colon_index as usize + 1 + packet_len;
             let packet_bytes = bytes[colon_index as usize + 1..end].to_owned();
-            let packet_str = String::from_utf8(packet_bytes)?;
+            let packet_str = String::from_utf8(packet_bytes).unwrap();
             let packet = Packet::from_str(&packet_str).unwrap();
 
             packets.push(packet);
@@ -144,7 +157,7 @@ mod tests {
     fn test_payload_decoding_of_one_packet() {
         let input = r#"96:0{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#;
 
-        let result = Payload::from_str_colon_msg_format(&input.as_bytes()).unwrap();
+        let result = Payload::new(&input.as_bytes()).unwrap();
         let expected = Packet::with_str( PacketType::Open,
              r#"{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#);
 
@@ -156,7 +169,7 @@ mod tests {
         let mut input = r#"96:0{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#.to_owned();
         input.push_str(&input.clone());
         input.push_str(&input.clone());
-        let result = Payload::from_str_colon_msg_format(&input.as_bytes()).unwrap();
+        let result = Payload::new(&input.as_bytes()).unwrap();
         let expected = Packet::with_str( PacketType::Open,
             r#"{"sid":"d5vWJMbJuMCRZOnuAAAI","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":5000}"#);
 
@@ -169,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn test_payload_decoding_of_binary() {
+    fn test_payload_decoding_of_mixed_content() {
         let bytes = [
             0, 1, 3, 255, 52, 117, 116, 102, 32, 56, 32, 115, 116, 114, 105, 110, 103, 1, 7, 255,
             4, 0, 1, 2, 3, 4, 5,

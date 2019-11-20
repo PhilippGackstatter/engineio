@@ -67,7 +67,7 @@ impl Client {
         let connect_url = format!("{}?transport=polling&EIO=3", url);
         info!("Establishing connection to {}", connect_url);
         let bytes = surf::get(&connect_url).recv_bytes().await.unwrap();
-        let payload = Payload::from_str_colon_msg_format(&bytes).unwrap();
+        let payload = Payload::new(&bytes).unwrap();
 
         if let PacketData::Str(string) = payload.packets().first().unwrap().data() {
             let packet: OpenPacket = serde_json::from_str(string).unwrap();
@@ -165,10 +165,7 @@ impl ClientConfig {
             let url = Self::get_url(&self);
             debug!("Polling {}", url);
             let bytes = surf::get(&url).recv_bytes().await.unwrap();
-            let payload = match Payload::new(&bytes) {
-                Ok(pl) => pl,
-                Err(_) => Payload::from_str_colon_msg_format(&bytes).unwrap(),
-            };
+            let payload = Payload::new(&bytes).unwrap();
 
             for packet in payload.into_packets() {
                 debug!("Received {:?}", packet);
