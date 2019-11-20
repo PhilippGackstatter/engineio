@@ -1,4 +1,6 @@
 use crate::packet::Packet;
+use std::error::Error;
+use std::fmt::Display;
 use std::ops::Range;
 use std::str::FromStr;
 
@@ -23,7 +25,7 @@ impl Payload {
                 Self::decode_text(bytes)
             }
         } else {
-            Err(PayloadDecodeError {})
+            Ok(Payload { packets: vec![] })
         }
     }
 
@@ -119,14 +121,14 @@ impl Payload {
         let colon_index = bytes
             .iter()
             .position(|byte| *byte == b':')
-            .ok_or(0)
-            .unwrap_or_else(|_| panic!("{:?}", bytes));
+            .ok_or_else(|| PayloadDecodeError::new("Did not find ':'".into()))?;
 
         let packet_len_str = String::from_utf8(bytes[..(colon_index as usize)].to_vec())
-            .unwrap_or_else(|e| panic!(e));
+            .map_err(|err| PayloadDecodeError::new(err.description().into()))?;
+
         let packet_len = packet_len_str
             .parse::<usize>()
-            .unwrap_or_else(|e| panic!("{:#?} {:#?}", e, String::from_utf8(bytes.to_vec())));
+            .map_err(|err| PayloadDecodeError::new(err.description().into()))?;
 
         let mut end = 0;
         let mut packets = vec![];
@@ -134,8 +136,10 @@ impl Payload {
         while end < bytes.len() + 1 {
             end = colon_index as usize + 1 + packet_len;
             let packet_bytes = bytes[colon_index as usize + 1..end].to_owned();
-            let packet_str = String::from_utf8(packet_bytes).unwrap();
+            let packet_str = String::from_utf8(packet_bytes)
+                .map_err(|err| PayloadDecodeError::new(err.description().into()))?;
             let packet = Packet::from_str(&packet_str).unwrap();
+            // .map_err(|err| PayloadDecodeError::new(err.description().into()))?;
 
             packets.push(packet);
             bytes = &bytes[end..];
@@ -144,8 +148,24 @@ impl Payload {
     }
 }
 
-#[derive(Debug)]
-pub struct PayloadDecodeError {}
+#[derive(Debug, PartialEq, Default)]
+pub struct PayloadDecodeError {
+    description: String,
+}
+
+impl PayloadDecodeError {
+    pub fn new(description: String) -> Self {
+        PayloadDecodeError { description }
+    }
+}
+
+impl Display for PayloadDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.description)
+    }
+}
+
+impl Error for PayloadDecodeError {}
 
 impl From<std::num::ParseIntError> for PayloadDecodeError {
     fn from(error: std::num::ParseIntError) -> Self {
@@ -243,11 +263,24 @@ mod tests {
             payload.packets()[0],
             Packet::with_str(PacketType::Message, "msg")
         );
+
         assert_eq!(
             payload.packets()[1],
             Packet::with_str(PacketType::Message, "eng")
         );
 
         assert_eq!(payload.encode_binary(), bytes);
+    }
+
+    #[test]
+    fn test_invalid_input_returns_error() {
+        let bytes = vec![3, 4, 255];
+        let payload_err = Payload::new(&bytes).unwrap_err();
+        assert_eq!(
+            payload_err,
+            PayloadDecodeError {
+                description: "Did not find ':'".into(),
+            }
+        );
     }
 }
