@@ -2,13 +2,11 @@ use crate::packet::{Packet, PacketData, PacketType};
 use crate::payload::Payload;
 use async_std::future::join;
 use async_std::task::{self, JoinHandle};
-use fnv::FnvHashMap;
+use async_trait::async_trait;
 use futures::channel::mpsc;
-use futures::future::{BoxFuture, FutureExt};
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,41 +14,13 @@ use std::time::SystemTime;
 
 use log::{debug, error, info};
 
-#[derive(Default)]
-pub struct ClientBuilder {
-    handlers: FnvHashMap<String, Box<DynEventHandler>>,
-}
+#[async_trait]
+pub trait EventHandler {
+    async fn on_connect(&mut self);
 
-impl ClientBuilder {
-    pub fn new() -> Self {
-        ClientBuilder {
-            handlers: FnvHashMap::default(),
-        }
-    }
+    async fn on_disconnect(&mut self);
 
-    pub fn connect_handler(mut self, event_handler: impl EventHandler) -> Self {
-        self.add("connect", event_handler);
-        self
-    }
-
-    pub fn disconnect_handler(mut self, event_handler: impl EventHandler) -> Self {
-        self.add("disconnect", event_handler);
-        self
-    }
-
-    pub fn message_handler(mut self, event_handler: impl EventHandler) -> Self {
-        self.add("message", event_handler);
-        self
-    }
-
-    fn add(&mut self, event_name: &str, event_handler: impl EventHandler) {
-        let dyn_handler = Box::new(move |data| event_handler.call(data).boxed());
-        self.handlers.insert(event_name.to_owned(), dyn_handler);
-    }
-
-    pub fn build(self, url: &str) -> impl Future<Output = Result<Client, ConnectionError>> + '_ {
-        Client::connect(url, self.handlers)
-    }
+    async fn on_message(&mut self, data: PacketData);
 }
 
 pub struct Client {
@@ -60,9 +30,6 @@ pub struct Client {
     write_handle: JoinHandle<()>,
 }
 
-pub(crate) type DynEventHandler =
-    dyn (Fn(PacketData) -> BoxFuture<'static, ()>) + 'static + Send + Sync;
-
 pub struct ClientConfig {
     is_connected: AtomicBool,
     sid: String,
@@ -70,7 +37,6 @@ pub struct ClientConfig {
     ping_interval: u32,
     ping_timeout: u32,
     ping_received: AtomicBool,
-    handlers: FnvHashMap<String, Box<DynEventHandler>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -85,12 +51,6 @@ struct OpenPacket {
 #[derive(Debug)]
 pub struct ConnectionError {}
 
-// impl From<surf::Exception> for ConnectionError {
-//     fn from(_error: surf::Exception) -> ConnectionError {
-//         ConnectionError {}
-//     }
-// }
-
 impl Client {
     pub async fn serve(&mut self) {
         let ping = &mut self.ping_handle;
@@ -101,7 +61,7 @@ impl Client {
 
     pub async fn connect(
         url: &str,
-        handlers: FnvHashMap<String, Box<DynEventHandler>>,
+        event_handler: impl EventHandler + Send + Sync + 'static,
     ) -> Result<Client, ConnectionError> {
         let connect_url = format!("{}?transport=polling&EIO=3", url);
         info!("Establishing connection to {}", connect_url);
@@ -120,10 +80,9 @@ impl Client {
                 ping_interval: packet.pingInterval,
                 ping_timeout: packet.pingTimeout,
                 ping_received: AtomicBool::new(true),
-                handlers,
             });
 
-            let poll_handle = task::spawn(Arc::clone(&config).poll_loop());
+            let poll_handle = task::spawn(Arc::clone(&config).poll_loop(event_handler));
             let ping_handle = task::spawn(Arc::clone(&config).ping_loop(sender.clone()));
             let write_handle = task::spawn(Arc::clone(&config).write_loop(receiver));
 
@@ -197,7 +156,10 @@ impl ClientConfig {
         debug!("Exit ping loop");
     }
 
-    async fn poll_loop(self: Arc<ClientConfig>) {
+    async fn poll_loop(
+        self: Arc<ClientConfig>,
+        mut event_handler: impl EventHandler + Send + Sync,
+    ) {
         while self.is_connected.load(Ordering::Relaxed) {
             let url = Self::get_url(&self);
             debug!("Polling {}", url);
@@ -209,7 +171,7 @@ impl ClientConfig {
 
             for packet in payload.into_packets() {
                 debug!("Received {:?}", packet);
-                Self::handle_packet(&self, packet).await;
+                Self::handle_packet(&self, packet, &mut event_handler).await;
             }
         }
         debug!("Exit poll loop");
@@ -225,16 +187,21 @@ impl ClientConfig {
         debug!("Exit write loop");
     }
 
-    async fn handle_packet(config: &Arc<ClientConfig>, packet: Packet) {
+    async fn handle_packet(
+        config: &Arc<ClientConfig>,
+        packet: Packet,
+        event_handler: &mut (dyn EventHandler + Send + Sync),
+    ) {
         match packet.packet_type() {
             PacketType::Pong => {
                 config.ping_received.store(true, Ordering::SeqCst);
             }
             PacketType::Close => {
                 Self::disconnect(config).await;
+                event_handler.on_disconnect().await;
             }
             PacketType::Message => {
-                Self::trigger_event("message", config, packet.into_data()).await;
+                event_handler.on_message(packet.into_data()).await;
             }
             PacketType::Noop => (),
             _ => {
@@ -246,41 +213,5 @@ impl ClientConfig {
     async fn disconnect(config: &Arc<ClientConfig>) {
         info!("Disconnecting");
         config.is_connected.store(false, Ordering::Relaxed);
-        Self::trigger_event("disconnect", config, PacketData::Str("".to_owned())).await;
-    }
-
-    async fn trigger_event(event_name: &str, config: &Arc<ClientConfig>, event_data: PacketData) {
-        if let Some(event_handler) = config.handlers.get(event_name) {
-            debug!("Trigger event {}", event_name);
-            event_handler(event_data).await;
-        }
-    }
-}
-
-pub trait EventHandler: Send + Sync + 'static {
-    /// The async result of `call`.
-    type Fut: Future<Output = ()> + Send + 'static;
-
-    /// Invoke the event handler with the received data
-    fn call(&self, data: PacketData) -> Self::Fut;
-}
-
-// Implement EventHandler for all functions with a
-// Future as return type
-// Allows passing async fns as event handlers
-impl<F: Send + Sync + 'static, Fut> EventHandler for F
-where
-    F: Fn(PacketData) -> Fut,
-    Fut: Future + Send + 'static,
-    // Fut::Output: (),
-{
-    type Fut = BoxFuture<'static, ()>;
-
-    fn call(&self, data: PacketData) -> Self::Fut {
-        let fut = (self)(data);
-
-        Box::pin(async move {
-            fut.await;
-        })
     }
 }
