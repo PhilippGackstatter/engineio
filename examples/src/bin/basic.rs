@@ -10,7 +10,7 @@ async fn main() {
     let handler = Handler {};
     let mut client = Client::connect(url_str, handler).await.unwrap();
 
-    client.join().await;
+    client.join().await.unwrap();
 }
 
 struct Handler {}

@@ -1,9 +1,9 @@
 use crate::packet::{Packet, PacketData, PacketType};
-use crate::payload::Payload;
+use crate::payload::{Payload, PayloadDecodeError};
 use async_std::task::{self, JoinHandle};
 use async_trait::async_trait;
 use futures::channel::mpsc;
-use futures::join;
+use futures::try_join;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -25,9 +25,9 @@ pub trait EventHandler {
 
 pub struct Client {
     write_channel: mpsc::UnboundedSender<Packet>,
-    ping_handle: JoinHandle<()>,
-    poll_handle: JoinHandle<()>,
-    write_handle: JoinHandle<()>,
+    ping_handle: JoinHandle<Result<(), EIOError>>,
+    poll_handle: JoinHandle<Result<(), EIOError>>,
+    write_handle: JoinHandle<Result<(), EIOError>>,
 }
 
 pub struct ClientConfig {
@@ -49,21 +49,49 @@ struct OpenPacket {
 }
 
 #[derive(Debug)]
-pub struct ConnectionError {}
+pub enum EIOErrorKind {
+    /// An error with the underlying transport
+    Transport(String),
+    /// A violation of the engine.io protocol
+    Protocol(String),
+}
+
+#[derive(Debug)]
+pub struct EIOError {
+    kind: EIOErrorKind,
+}
+
+impl From<surf::Exception> for EIOError {
+    fn from(err: surf::Exception) -> Self {
+        Self {
+            kind: EIOErrorKind::Transport(format!("{}", err)),
+        }
+    }
+}
+
+impl From<PayloadDecodeError> for EIOError {
+    fn from(err: PayloadDecodeError) -> Self {
+        Self {
+            kind: EIOErrorKind::Protocol(format!("{}", err)),
+        }
+    }
+}
 
 impl Client {
-    pub async fn join(&mut self) {
-        join!(
-            &mut self.poll_handle,
-            &mut self.write_handle,
-            &mut self.ping_handle,
-        );
+    pub async fn join(self) -> Result<(), EIOError> {
+        let poll = self.poll_handle;
+        let write = self.write_handle;
+        let ping = self.ping_handle;
+
+        try_join!(poll, write, ping)?;
+
+        Ok(())
     }
 
     pub async fn connect(
         url: &str,
         event_handler: impl EventHandler + Send + Sync + 'static,
-    ) -> Result<Client, ConnectionError> {
+    ) -> Result<Client, EIOError> {
         let connect_url = format!("{}?transport=polling&EIO=3", url);
         info!("Establishing connection to {}", connect_url);
         let bytes = surf::get(&connect_url).recv_bytes().await.unwrap();
@@ -128,7 +156,7 @@ impl ClientConfig {
         )
     }
 
-    async fn ping_loop(self: Arc<ClientConfig>, mut write_channel: mpsc::UnboundedSender<Packet>) {
+    async fn ping_loop(self: Arc<ClientConfig>, mut write_channel: mpsc::UnboundedSender<Packet>) -> Result<(), EIOError> {
         let timeout = std::time::Duration::new((self.ping_timeout / 1000) as u64, 0);
         let interval = std::time::Duration::new(
             (self.ping_interval / 1000 - self.ping_timeout / 1000) as u64,
@@ -155,17 +183,20 @@ impl ClientConfig {
             async_std::task::sleep(interval).await;
         }
         debug!("Exit ping loop");
+        Ok(())
     }
 
     async fn poll_loop(
         self: Arc<ClientConfig>,
         mut event_handler: impl EventHandler + Send + Sync,
-    ) {
+    ) -> Result<(), EIOError> {
         while self.is_connected.load(Ordering::Relaxed) {
             let url = Self::get_url(&self);
             debug!("Polling {}", url);
-            let bytes = surf::get(&url).recv_bytes().await.unwrap();
-            let payload = Payload::new(&bytes).unwrap();
+
+            let bytes = surf::get(&url).recv_bytes().await?;
+
+            let payload = Payload::new(&bytes)?;
 
             for packet in payload.into_packets() {
                 debug!("Received {:?}", packet);
@@ -173,9 +204,10 @@ impl ClientConfig {
             }
         }
         debug!("Exit poll loop");
+        Ok(())
     }
 
-    async fn write_loop(self: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) {
+    async fn write_loop(self: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) -> Result<(), EIOError> {
         while let Some(packet) = receiver.next().await {
             debug!("Sending {:?}", packet);
             let payload = Payload::from_packet(packet);
@@ -183,6 +215,7 @@ impl ClientConfig {
             let _response = surf::post(&url).body_bytes(payload.encode_binary()).await;
         }
         debug!("Exit write loop");
+        Ok(())
     }
 
     async fn handle_packet(
