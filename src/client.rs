@@ -3,9 +3,9 @@ use crate::payload::{Payload, PayloadDecodeError};
 use async_std::task::{self, JoinHandle};
 use async_trait::async_trait;
 use futures::channel::mpsc;
-use futures::try_join;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
+use futures::try_join;
 use serde::{Deserialize, Serialize};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,14 +156,17 @@ impl ClientConfig {
         )
     }
 
-    async fn ping_loop(self: Arc<ClientConfig>, mut write_channel: mpsc::UnboundedSender<Packet>) -> Result<(), EIOError> {
+    async fn ping_loop(
+        self: Arc<ClientConfig>,
+        mut write_channel: mpsc::UnboundedSender<Packet>,
+    ) -> Result<(), EIOError> {
         let timeout = std::time::Duration::new((self.ping_timeout / 1000) as u64, 0);
         let interval = std::time::Duration::new(
             (self.ping_interval / 1000 - self.ping_timeout / 1000) as u64,
             0,
         );
         debug!("Interval {:?}, Timeout {:?}", interval, timeout);
-        loop {
+        while self.is_connected.load(Ordering::Relaxed) {
             write_channel
                 .send(Packet::with_str(PacketType::Ping, "probe"))
                 .await
@@ -194,7 +197,13 @@ impl ClientConfig {
             let url = Self::get_url(&self);
             debug!("Polling {}", url);
 
-            let bytes = surf::get(&url).recv_bytes().await?;
+            let bytes = match surf::get(&url).recv_bytes().await {
+                Ok(bytes) => bytes,
+                Err(exc) => {
+                    Self::disconnect(&self).await;
+                    return Err(exc.into());
+                }
+            };
 
             let payload = Payload::new(&bytes)?;
 
@@ -207,7 +216,10 @@ impl ClientConfig {
         Ok(())
     }
 
-    async fn write_loop(self: Arc<ClientConfig>, mut receiver: mpsc::UnboundedReceiver<Packet>) -> Result<(), EIOError> {
+    async fn write_loop(
+        self: Arc<ClientConfig>,
+        mut receiver: mpsc::UnboundedReceiver<Packet>,
+    ) -> Result<(), EIOError> {
         while let Some(packet) = receiver.next().await {
             debug!("Sending {:?}", packet);
             let payload = Payload::from_packet(packet);
