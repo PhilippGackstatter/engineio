@@ -95,7 +95,6 @@ impl From<PayloadDecodeError> for EIOError {
 }
 
 impl Sender {
-
     pub async fn emit_str(&mut self, data: String) {
         self.emit(PacketData::Str(data)).await;
     }
@@ -178,16 +177,19 @@ impl Client {
 impl ClientConfig {
     async fn start(
         self: Arc<ClientConfig>,
-        event_handler: impl EventHandler + Send + Sync,
+        mut event_handler: impl EventHandler + Send + Sync,
         write_channel: mpsc::UnboundedSender<Packet>,
         receiver: mpsc::UnboundedReceiver<Packet>,
     ) -> Result<(), EIOError> {
-        let poll = Arc::clone(&self).poll_loop(event_handler);
+        let poll = Arc::clone(&self).poll_loop(&mut event_handler);
         let ping = Arc::clone(&self).ping_loop(write_channel);
         let write = Arc::clone(&self).write_loop(receiver);
 
-        try_join!(poll, write, ping)?;
-        Ok(())
+        let result = try_join!(poll, write, ping);
+
+        event_handler.on_disconnect().await;
+
+        result.map(|_| ())
     }
 
     // self: &Arc<ClientConfig> is not yet supported (#64325)
@@ -239,8 +241,11 @@ impl ClientConfig {
 
     async fn poll_loop(
         self: Arc<ClientConfig>,
-        mut event_handler: impl EventHandler + Send + Sync,
+        event_handler: &mut (impl EventHandler + Send + Sync),
     ) -> Result<(), EIOError> {
+        // When the poll loop starts, we are connected
+        event_handler.on_connect().await;
+
         while self.is_connected.load(Ordering::Relaxed) {
             let url = Self::get_url(&self);
             debug!("Polling {}", url);
@@ -257,7 +262,7 @@ impl ClientConfig {
 
             for packet in payload.into_packets() {
                 debug!("Received {:?}", packet);
-                Self::handle_packet(&self, packet, &mut event_handler).await;
+                Self::handle_packet(&self, packet, event_handler).await;
             }
         }
         debug!("Exit poll loop");
