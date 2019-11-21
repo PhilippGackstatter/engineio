@@ -1,49 +1,73 @@
 use async_std::io;
 use async_std::prelude::*;
-use engineio::{ClientBuilder, PacketData};
+use async_trait::async_trait;
+use futures::try_join;
 
-fn main() {
-    log::set_max_level(log::LevelFilter::Info);
-    // simple_logger::init().unwrap();
+use engineio::{Client, EventHandler, PacketData, Sender};
 
-    async_std::task::block_on(async {
-        let url_str = "http://localhost:8080/engine.io/";
-        let mut client = ClientBuilder::new()
-            .connect_handler(connect)
-            .disconnect_handler(disconnect)
-            .message_handler(message)
-            .build(url_str)
-            .await
-            .unwrap();
+#[async_std::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
 
-        let stdin = io::stdin();
-        let reader = io::BufReader::new(stdin);
-        let mut lines = reader.lines();
+    let url_str = "http://localhost:8080/engine.io/";
+    let handler = Handler {};
+    let mut client = Client::connect(url_str, handler).await.unwrap();
+    let sender = client.sender();
 
-        println!("Type something...");
-
-        while let Some(line) = lines.next().await {
-            let line = line.unwrap();
-            client.emit_str(line).await;
+    // Crude way to cast from EIOError to impl Error s.t. both inputs to
+    // try_join! have the same Err
+    // There's probably a better way...
+    let client_join = async {
+        match client.join().await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(Box::new(err) as Box<dyn std::error::Error>),
         }
-    });
+    };
+
+    // This elegantly handles disconnects from a server
+    // On a disconnect, client_join returns with an error
+    // and try_join returns the error.
+    // emit_loop is no longer polled,
+    // thereby implicitly canceling it.
+    try_join!(client_join, emit_loop(sender))?;
+
+    Ok(())
 }
 
-async fn connect(_data: PacketData) {
-    println!("connect");
+async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn std::error::Error>> {
+    let stdin = io::stdin();
+    let reader = io::BufReader::new(stdin);
+    let mut lines = reader.lines();
+
+    println!("Type something...");
+
+    while let Some(line) = lines.next().await {
+        let line = line.unwrap();
+        sender.emit_str(line).await;
+    }
+    Ok(())
 }
 
-async fn disconnect(_data: PacketData) {
-    println!("disconnect");
-}
+struct Handler {}
 
-async fn message(data: PacketData) {
-    match data {
-        PacketData::Str(str_) => {
-            println!("{}", str_);
-        }
-        PacketData::Bytes(bytes) => {
-            println!("{:?}", bytes);
+#[async_trait]
+impl EventHandler for Handler {
+    async fn on_connect(&mut self) {
+        println!("connect");
+    }
+
+    async fn on_disconnect(&mut self) {
+        println!("disconnect");
+    }
+
+    async fn on_message(&mut self, data: PacketData) {
+        match data {
+            PacketData::Str(str_) => {
+                println!("{}", str_);
+            }
+            PacketData::Bytes(bytes) => {
+                println!("{:?}", bytes);
+            }
         }
     }
 }

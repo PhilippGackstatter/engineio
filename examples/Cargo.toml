@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 engineio = { path = "../" }
 async-std = { version = "1.0.1", features = [ "attributes" ] }
+futures-preview = { version = "0.3.0-alpha.19", features = [ "async-await" ] }
 log = "0.4.8"
 env_logger = "0.7.1"
 async-trait = "0.1.18"
