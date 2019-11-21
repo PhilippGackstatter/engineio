@@ -3,8 +3,7 @@ use engineio::{Client, EventHandler, PacketData};
 
 #[async_std::main]
 async fn main() {
-    log::set_max_level(log::LevelFilter::Info);
-    simple_logger::init().unwrap();
+    env_logger::init();
 
     let url_str = "http://localhost:8080/engine.io/";
     let handler = Handler {};
