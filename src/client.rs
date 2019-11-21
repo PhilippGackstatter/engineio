@@ -25,9 +25,7 @@ pub trait EventHandler {
 
 pub struct Client {
     write_channel: mpsc::UnboundedSender<Packet>,
-    ping_handle: JoinHandle<Result<(), EIOError>>,
-    poll_handle: JoinHandle<Result<(), EIOError>>,
-    write_handle: JoinHandle<Result<(), EIOError>>,
+    join_task_handle: JoinHandle<Result<(), EIOError>>,
 }
 
 pub struct ClientConfig {
@@ -60,6 +58,16 @@ pub enum EIOErrorKind {
 pub struct EIOError {
     kind: EIOErrorKind,
 }
+use std::fmt;
+
+impl fmt::Display for EIOError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            EIOErrorKind::Transport(str_) => write!(f, "{}", str_),
+            EIOErrorKind::Protocol(str_) => write!(f, "{}", str_),
+        }
+    }
+}
 
 impl From<surf::Exception> for EIOError {
     fn from(err: surf::Exception) -> Self {
@@ -79,12 +87,7 @@ impl From<PayloadDecodeError> for EIOError {
 
 impl Client {
     pub async fn join(self) -> Result<(), EIOError> {
-        let poll = self.poll_handle;
-        let write = self.write_handle;
-        let ping = self.ping_handle;
-
-        try_join!(poll, write, ping)?;
-
+        futures::join!(self.join_task_handle).0?;
         Ok(())
     }
 
@@ -99,7 +102,7 @@ impl Client {
 
         if let PacketData::Str(string) = payload.packets().first().unwrap().data() {
             let packet: OpenPacket = serde_json::from_str(string).unwrap();
-            debug!("Spawning tasks, sid is {}", packet.sid);
+            debug!("Spawning task, sid is {}", packet.sid);
             let (sender, receiver) = mpsc::unbounded();
 
             let config = Arc::new(ClientConfig {
@@ -111,15 +114,16 @@ impl Client {
                 ping_received: AtomicBool::new(true),
             });
 
-            let poll_handle = task::spawn(Arc::clone(&config).poll_loop(event_handler));
-            let ping_handle = task::spawn(Arc::clone(&config).ping_loop(sender.clone()));
-            let write_handle = task::spawn(Arc::clone(&config).write_loop(receiver));
+            let join_task_handle = task::spawn(ClientConfig::start(
+                Arc::clone(&config),
+                event_handler,
+                sender.clone(),
+                receiver,
+            ));
 
             let eio_client = Client {
                 write_channel: sender.clone(),
-                ping_handle,
-                poll_handle,
-                write_handle,
+                join_task_handle,
             };
 
             Ok(eio_client)
@@ -142,6 +146,20 @@ impl Client {
 }
 
 impl ClientConfig {
+    async fn start(
+        self: Arc<ClientConfig>,
+        event_handler: impl EventHandler + Send + Sync,
+        write_channel: mpsc::UnboundedSender<Packet>,
+        receiver: mpsc::UnboundedReceiver<Packet>,
+    ) -> Result<(), EIOError> {
+        let poll = Arc::clone(&self).poll_loop(event_handler);
+        let ping = Arc::clone(&self).ping_loop(write_channel);
+        let write = Arc::clone(&self).write_loop(receiver);
+
+        try_join!(poll, write, ping)?;
+        Ok(())
+    }
+
     // self: &Arc<ClientConfig> is not yet supported (#64325)
     fn get_url(config: &Arc<ClientConfig>) -> String {
         let time = SystemTime::now()
