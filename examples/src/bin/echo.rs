@@ -4,37 +4,29 @@ use async_trait::async_trait;
 use futures::try_join;
 
 use engineio::{Client, EventHandler, PacketData, Sender};
+use std::error::Error;
 
 #[async_std::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
-    let url_str = "http://localhost:8080/engine.io/";
-    let handler = Handler {};
-    let mut client = Client::connect(url_str, handler).await.unwrap();
+    let eio_handler = EngineIOHandler {};
+    let mut client = Client::connect("http://localhost:8080/engine.io/", eio_handler)
+        .await
+        .unwrap();
     let sender = client.sender();
-
-    // Crude way to cast from EIOError to impl Error s.t. both inputs to
-    // try_join! have the same Err
-    // There's probably a better way...
-    let client_join = async {
-        match client.join().await {
-            Ok(_) => Ok(()),
-            Err(err) => Err(Box::new(err) as Box<dyn std::error::Error>),
-        }
-    };
 
     // This elegantly handles disconnects from a server
     // On a disconnect, client_join returns with an error
     // and try_join returns the error.
     // emit_loop is no longer polled,
     // thereby implicitly canceling it.
-    try_join!(client_join, emit_loop(sender))?;
+    try_join!(client.join(), emit_loop(sender))?;
 
     Ok(())
 }
 
-async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn std::error::Error>> {
+async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let reader = io::BufReader::new(stdin);
     let mut lines = reader.lines();
@@ -42,16 +34,16 @@ async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn std::error::Error>>
     println!("Type something...");
 
     while let Some(line) = lines.next().await {
-        let line = line.unwrap();
+        let line = line?;
         sender.emit_str(line).await;
     }
     Ok(())
 }
 
-struct Handler {}
+struct EngineIOHandler {}
 
 #[async_trait]
-impl EventHandler for Handler {
+impl EventHandler for EngineIOHandler {
     async fn on_connect(&mut self) {
         println!("connect");
     }

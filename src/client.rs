@@ -102,7 +102,7 @@ impl Sender {
 }
 
 impl Client {
-    pub async fn join(&mut self) -> Result<(), EIOError> {
+    pub async fn join(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         futures::join!(&mut self.join_task_handle).0?;
         Ok(())
     }
