@@ -35,7 +35,6 @@ pub struct Client {
 }
 
 pub struct ClientConfig {
-    is_connected: AtomicBool,
     sid: String,
     base_url: String,
     ping_interval: u32,
@@ -128,7 +127,6 @@ impl Client {
             let (sender, receiver) = mpsc::unbounded();
 
             let config = ClientConfig {
-                is_connected: AtomicBool::new(true),
                 sid: packet.sid,
                 base_url: url.to_owned(),
                 ping_interval: packet.pingInterval,
@@ -211,7 +209,8 @@ impl ClientConfig {
             0,
         );
         debug!("Interval {:?}, Timeout {:?}", interval, timeout);
-        while self.is_connected.load(Ordering::Relaxed) {
+
+        loop {
             write_channel
                 .send(Packet::with_str(PacketType::Ping, "probe"))
                 .await
@@ -224,7 +223,6 @@ impl ClientConfig {
             // We expect to have received a pong after this time
             if !self.ping_received.load(Ordering::SeqCst) {
                 error!("Pong not received, aborting");
-                Self::disconnect(self).await;
                 break;
             }
 
@@ -241,14 +239,13 @@ impl ClientConfig {
         // When the poll loop starts, we are connected
         event_handler.on_connect().await;
 
-        while self.is_connected.load(Ordering::Relaxed) {
+        loop {
             let url = Self::get_url(&self);
             debug!("Polling {}", url);
 
             let bytes = match surf::get(&url).recv_bytes().await {
                 Ok(bytes) => bytes,
                 Err(exc) => {
-                    Self::disconnect(self).await;
                     return Err(exc.into());
                 }
             };
@@ -260,8 +257,6 @@ impl ClientConfig {
                 Self::handle_packet(self, packet, event_handler).await;
             }
         }
-        debug!("Exit poll loop");
-        Ok(())
     }
 
     async fn write_loop(
@@ -288,7 +283,6 @@ impl ClientConfig {
                 self.ping_received.store(true, Ordering::SeqCst);
             }
             PacketType::Close => {
-                Self::disconnect(self).await;
                 event_handler.on_disconnect().await;
             }
             PacketType::Message => {
@@ -299,10 +293,5 @@ impl ClientConfig {
                 error!("Unexpected packet {:?}", packet);
             }
         }
-    }
-
-    async fn disconnect(&self) {
-        info!("Disconnecting");
-        self.is_connected.store(false, Ordering::Relaxed);
     }
 }
