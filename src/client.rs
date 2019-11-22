@@ -1,6 +1,7 @@
 use crate::packet::{Packet, PacketData, PacketType};
 use crate::payload::{Payload, PayloadDecodeError};
 use async_std::task::{self, JoinHandle};
+use async_std::task_local;
 use async_trait::async_trait;
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
@@ -8,8 +9,8 @@ use futures::stream::StreamExt;
 use futures::try_join;
 use serde::{Deserialize, Serialize};
 
+use std::cell::Cell;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use log::{debug, error, info};
@@ -40,7 +41,6 @@ struct EngineIO {
     base_url: String,
     ping_interval: u32,
     ping_timeout: u32,
-    ping_received: AtomicBool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -159,6 +159,10 @@ impl Client {
     }
 }
 
+task_local! {
+    static PING_RECIEVED: Cell<bool> = Cell::new(true);
+}
+
 impl EngineIO {
     async fn fire_up(
         open_pkt: OpenPacket,
@@ -172,7 +176,6 @@ impl EngineIO {
             base_url: base_url.to_owned(),
             ping_interval: open_pkt.pingInterval,
             ping_timeout: open_pkt.pingTimeout,
-            ping_received: AtomicBool::new(true),
         };
 
         let result = try_join!(
@@ -189,7 +192,6 @@ impl EngineIO {
         }
     }
 
-    // self: &Arc<ClientConfig> is not yet supported (#64325)
     fn get_url(&self) -> String {
         let time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -220,12 +222,12 @@ impl EngineIO {
                 .await
                 .unwrap();
 
-            self.ping_received.store(false, Ordering::SeqCst);
+            PING_RECIEVED.with(|recv| recv.set(false));
 
             async_std::task::sleep(timeout).await;
 
             // We expect to have received a pong after this time
-            if !self.ping_received.load(Ordering::SeqCst) {
+            if !PING_RECIEVED.with(|recv| recv.get()) {
                 error!("Pong not received, aborting");
                 return Err(EIOError::PongNotReceived);
             }
@@ -282,7 +284,7 @@ impl EngineIO {
     ) {
         match packet.packet_type() {
             PacketType::Pong => {
-                self.ping_received.store(true, Ordering::SeqCst);
+                PING_RECIEVED.with(|recv| recv.set(true));
             }
             PacketType::Close => {
                 event_handler.on_disconnect().await;
