@@ -9,7 +9,6 @@ use futures::try_join;
 use serde::{Deserialize, Serialize};
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use log::{debug, error, info};
@@ -128,21 +127,17 @@ impl Client {
             debug!("Spawning task, sid is {}", packet.sid);
             let (sender, receiver) = mpsc::unbounded();
 
-            let config = Arc::new(ClientConfig {
+            let config = ClientConfig {
                 is_connected: AtomicBool::new(true),
                 sid: packet.sid,
                 base_url: url.to_owned(),
                 ping_interval: packet.pingInterval,
                 ping_timeout: packet.pingTimeout,
                 ping_received: AtomicBool::new(true),
-            });
+            };
 
-            let join_task_handle = task::spawn(ClientConfig::start(
-                Arc::clone(&config),
-                event_handler,
-                sender.clone(),
-                receiver,
-            ));
+            let join_task_handle =
+                task::spawn(config.start(event_handler, sender.clone(), receiver));
 
             let eio_client = Client {
                 write_channel: sender.clone(),
@@ -176,16 +171,16 @@ impl Client {
 
 impl ClientConfig {
     async fn start(
-        self: Arc<ClientConfig>,
+        self,
         mut event_handler: impl EventHandler + Send + Sync,
         write_channel: mpsc::UnboundedSender<Packet>,
         receiver: mpsc::UnboundedReceiver<Packet>,
     ) -> Result<(), EIOError> {
-        let poll = Arc::clone(&self).poll_loop(&mut event_handler);
-        let ping = Arc::clone(&self).ping_loop(write_channel);
-        let write = Arc::clone(&self).write_loop(receiver);
-
-        let result = try_join!(poll, write, ping);
+        let result = try_join!(
+            (&self).poll_loop(&mut event_handler),
+            (&self).ping_loop(write_channel),
+            (&self).write_loop(receiver),
+        );
 
         event_handler.on_disconnect().await;
 
@@ -193,21 +188,21 @@ impl ClientConfig {
     }
 
     // self: &Arc<ClientConfig> is not yet supported (#64325)
-    fn get_url(config: &Arc<ClientConfig>) -> String {
+    fn get_url(&self) -> String {
         let time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
         format!(
             "{}?transport=polling&EIO=3&sid={}&t={}.{}",
-            config.base_url,
-            config.sid,
+            self.base_url,
+            self.sid,
             time.as_secs(),
             time.subsec_nanos()
         )
     }
 
     async fn ping_loop(
-        self: Arc<ClientConfig>,
+        &self,
         mut write_channel: mpsc::UnboundedSender<Packet>,
     ) -> Result<(), EIOError> {
         let timeout = std::time::Duration::new((self.ping_timeout / 1000) as u64, 0);
@@ -229,7 +224,7 @@ impl ClientConfig {
             // We expect to have received a pong after this time
             if !self.ping_received.load(Ordering::SeqCst) {
                 error!("Pong not received, aborting");
-                Self::disconnect(&self).await;
+                Self::disconnect(self).await;
                 break;
             }
 
@@ -240,7 +235,7 @@ impl ClientConfig {
     }
 
     async fn poll_loop(
-        self: Arc<ClientConfig>,
+        &self,
         event_handler: &mut (impl EventHandler + Send + Sync),
     ) -> Result<(), EIOError> {
         // When the poll loop starts, we are connected
@@ -253,7 +248,7 @@ impl ClientConfig {
             let bytes = match surf::get(&url).recv_bytes().await {
                 Ok(bytes) => bytes,
                 Err(exc) => {
-                    Self::disconnect(&self).await;
+                    Self::disconnect(self).await;
                     return Err(exc.into());
                 }
             };
@@ -262,7 +257,7 @@ impl ClientConfig {
 
             for packet in payload.into_packets() {
                 debug!("Received {:?}", packet);
-                Self::handle_packet(&self, packet, event_handler).await;
+                Self::handle_packet(self, packet, event_handler).await;
             }
         }
         debug!("Exit poll loop");
@@ -270,7 +265,7 @@ impl ClientConfig {
     }
 
     async fn write_loop(
-        self: Arc<ClientConfig>,
+        &self,
         mut receiver: mpsc::UnboundedReceiver<Packet>,
     ) -> Result<(), EIOError> {
         while let Some(packet) = receiver.next().await {
@@ -284,16 +279,16 @@ impl ClientConfig {
     }
 
     async fn handle_packet(
-        config: &Arc<ClientConfig>,
+        &self,
         packet: Packet,
         event_handler: &mut (dyn EventHandler + Send + Sync),
     ) {
         match packet.packet_type() {
             PacketType::Pong => {
-                config.ping_received.store(true, Ordering::SeqCst);
+                self.ping_received.store(true, Ordering::SeqCst);
             }
             PacketType::Close => {
-                Self::disconnect(config).await;
+                Self::disconnect(self).await;
                 event_handler.on_disconnect().await;
             }
             PacketType::Message => {
@@ -306,8 +301,8 @@ impl ClientConfig {
         }
     }
 
-    async fn disconnect(config: &Arc<ClientConfig>) {
+    async fn disconnect(&self) {
         info!("Disconnecting");
-        config.is_connected.store(false, Ordering::Relaxed);
+        self.is_connected.store(false, Ordering::Relaxed);
     }
 }
