@@ -1,64 +1,85 @@
-# EngineIO Client Rust
+# EngineIO Rust Client
 
 An [engineio](https://github.com/socketio/engine.io) client in Rust with `async/await` support (in development).
 
-EngineIO is usually not used directly, but used through the higher-level abstraction of `socketio`, which is not yet developed.
+EngineIO is usually not used directly, but through the higher-level abstraction of `socketio` (not yet developed).
 
 ## Example
 
 For the full example see [here](examples/src/bin/echo.rs).
 
-To build a simple echo server, we first use the ClientBuilder to connect to an `engineio` server.
+To build a simple echo server, we use the `Client` to connect to an `engineio` server.
 
 ```rust
-let mut client = ClientBuilder::new()
-    .connect_handler(connect)
-    .disconnect_handler(disconnect)
-    .message_handler(message)
-    .build("http://localhost:8080/engine.io/")
-    .await?;
+#[async_std::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let eio_handler = EngineIOHandler {};
+    let mut client = Client::connect("http://localhost:8080/engine.io/", eio_handler).await?;
+
+    Ok(())
+}
 ```
 
-We need to define some async event handlers in order to receive messages from the server.
+The `EngineIOHandler` is a user-defined type that implements `EventHandler`. It defines methods that are called when the client receives certain events such as `connect`, `disconnect` or `message`. Messages can be of type `String` or bytes in the form of `Vec<u8>`.
 
 ```rust
-async fn connect(_data: PacketData) {
-    println!("connect");
-}
+struct EngineIOHandler {}
 
-async fn disconnect(_data: PacketData) {
-    println!("disconnect");
-}
+#[async_trait]
+impl EventHandler for EngineIOHandler {
+    async fn on_connect(&mut self) {
+        println!("connect");
+    }
 
-async fn message(data: PacketData) {
-    match data {
-        PacketData::Str(str_) => {
-            println!("{}", str_);
-        }
-        PacketData::Bytes(bytes) => {
-            println!("{:?}", bytes);
+    async fn on_disconnect(&mut self) {
+        println!("disconnect");
+    }
+
+    async fn on_message(&mut self, data: PacketData) {
+        match data {
+            PacketData::Str(str_) => {
+                println!("{}", str_);
+            }
+            PacketData::Bytes(bytes) => {
+                println!("{:?}", bytes);
+            }
         }
     }
 }
 ```
 
-Now we can send data the user types into the terminal to the server.
+Next we define a `emit_loop` that reads user input from the terminal and sends it to the EngineIO server. The interesting part here is that we pass a `Sender` to the method, which can be used to `emit` messages via the client, that are sent to the server. We can create one of those senders, by simply calling `client.sender()`. You can create as many of those senders as you need.
 
 ```rust
-let stdin = io::stdin();
-let reader = io::BufReader::new(stdin);
-let mut lines = reader.lines();
+async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn Error>> {
+    let lines = ... /* Create a stream from stdin */
 
-println!("Type something...");
-
-while let Some(line) = lines.next().await {
-    client.emit_str(line?).await;
+    while let Some(line) = lines.next().await {
+        let line = line?;
+        sender.emit_str(line).await;
+    }
+    Ok(())
 }
 ```
 
-On the server side we can use the JavaScript `engineio` implementation to send back any received data.
+Now we only need to call this loop to get going. But what if, for example, the server goes down for whatever reason? To handle this gracefully, we'll extend the main method as follows
+
+```rust
+try_join!(client.join(), emit_loop(sender))?;
+```
+
+`try_join!` allows us to poll multiple futures concurrently. As soon as one returns an error, it stops polling and returns. The `join` method on `Client` allows us to react to errors the client may return. For instance, if it loses connection to the server, it returns an error. This in turn causes `try_join!` to return as well. We thereby implicitly stop polling `emit_loop`, which is otherwise an endless loop of asking for user input.
+
+With that we have setup a client connection to an `engineio` server, defined an event handler to react to server-sent events and emitted and input from the user. Finally, we handled a graceful shutdown of the application if an error should occur.
+
+See the full example [here](examples/src/bin/echo.rs).
+
+Run it from the `examples` directory using `cargo run --bin echo`.
+
+In the absence of a Rust implementation of an `engineio` server, we'll use the JavaScript `engineio` implementation to send back any received data.
 
 ```js
+// file engineio.js
 var engine = require("engine.io");
 var server = engine.listen(8080);
 
@@ -69,3 +90,5 @@ server.on("connection", function(socket) {
   });
 });
 ```
+
+You can start that up with `npm install engine.io` and a subsequent `node engineio.js`.
