@@ -48,7 +48,7 @@ impl EventHandler for EngineIOHandler {
 }
 ```
 
-Next we define a `emit_loop` that reads user input from the terminal and sends it to the EngineIO server. The interesting part here is that we pass a `Sender` to the method, which can be used to `emit` messages via the client, that are sent to the server. We can create one of those senders, by simply calling `client.sender()`. You can create as many of those senders as you need.
+Next we define an `emit_loop` that reads user input from the terminal and sends it to the EngineIO server. The interesting part here is that we pass a `Sender` to the method, which can be used to `emit` messages via the client, that are sent to the server. We can create one of those senders, by simply calling `client.sender()`. You can create as many of those senders as you need.
 
 ```rust
 async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn Error>> {
@@ -62,15 +62,15 @@ async fn emit_loop(mut sender: Sender) -> Result<(), Box<dyn Error>> {
 }
 ```
 
-Now we only need to call this loop to get going. But what if, for example, the server goes down for whatever reason? To handle this gracefully, we'll extend the main method as follows
+Now we only need to call this loop to get going. But what if, for example, the server goes down and we need to exit from the `emit_loop` function? Luckily, Rust's futures are lazy and we can use that to our advantage. To handle this gracefully, we'll extend the main method as follows.
 
 ```rust
 try_join!(client.join(), emit_loop(sender))?;
 ```
 
-`try_join!` allows us to poll multiple futures concurrently. As soon as one returns an error, it stops polling and returns. The `join` method on `Client` allows us to react to errors the client may return. For instance, if it loses connection to the server, it returns an error. This in turn causes `try_join!` to return as well. We thereby implicitly stop polling `emit_loop`, which is otherwise an endless loop of asking for user input.
+`try_join!` allows us to poll multiple futures concurrently. As soon as one returns an error, it stops polling and returns. The `join` method on `Client` returns a `Result`. For instance, if it loses connection to the server, it returns an error. This in turn causes `try_join!` to stop polling all of its futures. We thereby implicitly stop polling `emit_loop`, which would otherwise ask for user input forever.
 
-With that we have setup a client connection to an `engineio` server, defined an event handler to react to server-sent events and emitted and input from the user. Finally, we handled a graceful shutdown of the application if an error should occur.
+With that we have setup a client connection to an `engineio` server, defined an event handler to react to server-sent events and emitted any input from the user. Finally, we handled a graceful shutdown of the application in case of an error.
 
 See the full example [here](examples/src/bin/echo.rs).
 
