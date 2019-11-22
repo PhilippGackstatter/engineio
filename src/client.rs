@@ -8,6 +8,7 @@ use futures::stream::StreamExt;
 use futures::try_join;
 use serde::{Deserialize, Serialize};
 
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
@@ -52,43 +53,37 @@ struct OpenPacket {
 }
 
 #[derive(Debug)]
-pub enum EIOErrorKind {
-    /// An error with the underlying transport
+pub enum EIOError {
+    /// An error with the underlying transport.
     Transport(String),
-    /// A violation of the engine.io protocol
+    /// A violation of the engine.io protocol.
     Protocol(String),
+    /// An error to signal that no pong was
+    /// received from the other end.
+    PongNotReceived,
 }
-
-#[derive(Debug)]
-pub struct EIOError {
-    kind: EIOErrorKind,
-}
-use std::fmt;
 
 impl std::error::Error for EIOError {}
 
 impl fmt::Display for EIOError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            EIOErrorKind::Transport(str_) => write!(f, "{}", str_),
-            EIOErrorKind::Protocol(str_) => write!(f, "{}", str_),
+        match self {
+            EIOError::Transport(str_) => write!(f, "{}", str_),
+            EIOError::Protocol(str_) => write!(f, "{}", str_),
+            EIOError::PongNotReceived => write!(f, "Pong was not received"),
         }
     }
 }
 
 impl From<surf::Exception> for EIOError {
     fn from(err: surf::Exception) -> Self {
-        Self {
-            kind: EIOErrorKind::Transport(format!("{}", err)),
-        }
+        Self::Transport(format!("{}", err))
     }
 }
 
 impl From<PayloadDecodeError> for EIOError {
     fn from(err: PayloadDecodeError) -> Self {
-        Self {
-            kind: EIOErrorKind::Protocol(format!("{}", err)),
-        }
+        Self::Protocol(format!("{}", err))
     }
 }
 
@@ -182,7 +177,10 @@ impl ClientConfig {
 
         event_handler.on_disconnect().await;
 
-        result.map(|_| ())
+        match result {
+            Ok(_) => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 
     // self: &Arc<ClientConfig> is not yet supported (#64325)
@@ -223,13 +221,11 @@ impl ClientConfig {
             // We expect to have received a pong after this time
             if !self.ping_received.load(Ordering::SeqCst) {
                 error!("Pong not received, aborting");
-                break;
+                return Err(EIOError::PongNotReceived);
             }
 
             async_std::task::sleep(interval).await;
         }
-        debug!("Exit ping loop");
-        Ok(())
     }
 
     async fn poll_loop(
