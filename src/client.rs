@@ -35,7 +35,7 @@ pub struct Client {
     join_task_handle: JoinHandle<Result<(), EIOError>>,
 }
 
-pub struct ClientConfig {
+struct EngineIO {
     sid: String,
     base_url: String,
     ping_interval: u32,
@@ -121,16 +121,13 @@ impl Client {
             debug!("Spawning task, sid is {}", packet.sid);
             let (sender, receiver) = mpsc::unbounded();
 
-            let config = ClientConfig {
-                sid: packet.sid,
-                base_url: url.to_owned(),
-                ping_interval: packet.pingInterval,
-                ping_timeout: packet.pingTimeout,
-                ping_received: AtomicBool::new(true),
-            };
-
-            let join_task_handle =
-                task::spawn(config.start(event_handler, sender.clone(), receiver));
+            let join_task_handle = task::spawn(EngineIO::fire_up(
+                packet,
+                url.to_owned(),
+                event_handler,
+                sender.clone(),
+                receiver,
+            ));
 
             let eio_client = Client {
                 write_channel: sender.clone(),
@@ -162,17 +159,26 @@ impl Client {
     }
 }
 
-impl ClientConfig {
-    async fn start(
-        self,
+impl EngineIO {
+    async fn fire_up(
+        open_pkt: OpenPacket,
+        base_url: String,
         mut event_handler: impl EventHandler + Send + Sync,
         write_channel: mpsc::UnboundedSender<Packet>,
         receiver: mpsc::UnboundedReceiver<Packet>,
     ) -> Result<(), EIOError> {
+        let config = EngineIO {
+            sid: open_pkt.sid,
+            base_url: base_url.to_owned(),
+            ping_interval: open_pkt.pingInterval,
+            ping_timeout: open_pkt.pingTimeout,
+            ping_received: AtomicBool::new(true),
+        };
+
         let result = try_join!(
-            (&self).poll_loop(&mut event_handler),
-            (&self).ping_loop(write_channel),
-            (&self).write_loop(receiver),
+            (&config).poll_loop(&mut event_handler),
+            (&config).ping_loop(write_channel),
+            (&config).write_loop(receiver),
         );
 
         event_handler.on_disconnect().await;
